@@ -31,6 +31,25 @@ app.get('/healthz', (_req, res) => {
   res.json({ ok: true, shell: SHELL, workdir: WORKDIR });
 });
 
+// ── URL proxy ───────────────────────────────────────────────────────
+// Fetches external URLs server-side to bypass CORS restrictions.
+// Used by html-display component to render web pages on VR monitors.
+app.get('/proxy', async (req, res) => {
+  const url = req.query.url;
+  if (!url) return res.status(400).json({ error: 'missing url param' });
+  try {
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; OrbitalStation/1.0)' }
+    });
+    const contentType = resp.headers.get('content-type') || 'text/html';
+    const body = await resp.text();
+    res.setHeader('Content-Type', contentType);
+    res.send(body);
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
 // Use HTTPS if certs exist, otherwise fall back to HTTP
 const certPath = process.env.TLS_CERT || path.join(certsDir, 'cert.pem');
 const keyPath = process.env.TLS_KEY || path.join(certsDir, 'key.pem');
