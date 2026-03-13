@@ -5,3 +5,4 @@ certs/
 .env
 /tmp/
 *.log
+hot-swap-state.json

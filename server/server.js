@@ -242,10 +242,28 @@ app.post('/pty/input', express.json(), (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Hot-swap channel (SSE) ───────────────────────────────────────────
+// ── Hot-swap channel (SSE) with persistence ─────────────────────────
 // SSE side-channel for injecting code/entities into VR without page reload.
 // Uses SSE instead of WebSocket because visionOS Safari blocks WSS to self-signed certs.
+// All pushes are persisted to disk and replayed on new client connections.
 const hotSwapClients = new Set();
+const hotSwapStateFile = path.join(projectRoot, 'hot-swap-state.json');
+
+function loadHotSwapState() {
+  try {
+    if (fs.existsSync(hotSwapStateFile)) {
+      return JSON.parse(fs.readFileSync(hotSwapStateFile, 'utf8'));
+    }
+  } catch {}
+  return [];
+}
+
+function saveHotSwapState(state) {
+  fs.writeFileSync(hotSwapStateFile, JSON.stringify(state, null, 2));
+}
+
+const hotSwapState = loadHotSwapState();
+console.log(`[hot-swap] loaded ${hotSwapState.length} persisted entries`);
 
 app.get('/hot-swap/stream', (_req, res) => {
   res.writeHead(200, {
@@ -256,8 +274,14 @@ app.get('/hot-swap/stream', (_req, res) => {
   });
   res.flushHeaders();
   res.write('data: {"type":"connected"}\n\n');
+
+  // Replay persisted state to new client
+  for (const entry of hotSwapState) {
+    res.write(`data: ${JSON.stringify(entry)}\n\n`);
+  }
+
   hotSwapClients.add(res);
-  console.log(`[hot-swap] SSE client connected (${hotSwapClients.size} total)`);
+  console.log(`[hot-swap] SSE client connected (${hotSwapClients.size} total), replayed ${hotSwapState.length} entries`);
   _req.on('close', () => {
     hotSwapClients.delete(res);
     console.log(`[hot-swap] SSE client disconnected (${hotSwapClients.size} total)`);
@@ -276,7 +300,7 @@ function broadcastHotSwap(payload) {
   return sent;
 }
 
-// Push arbitrary JS to all connected VR clients
+// Push arbitrary JS/entities to all connected VR clients and persist
 app.post('/hot-swap/push', express.json({ limit: '1mb' }), (req, res) => {
   const { code, entities, remove } = req.body;
   const payload = {};
@@ -286,9 +310,44 @@ app.post('/hot-swap/push', express.json({ limit: '1mb' }), (req, res) => {
   Object.assign(payload, req.body);
   if (!payload.type) payload.type = 'eval';
 
+  // Persist: tagged entities replace previous entries with same tag
+  const persist = req.body.persist !== false; // default true
+  if (persist) {
+    if (payload.tag && (payload.type === 'entities' || payload.type === 'eval')) {
+      // Replace existing entry with same tag
+      const idx = hotSwapState.findIndex(e => e.tag === payload.tag);
+      if (idx >= 0) hotSwapState[idx] = payload;
+      else hotSwapState.push(payload);
+    } else if (payload.type === 'remove' && payload.selector) {
+      // Remove matching persisted entries by tag
+      const tagMatch = payload.selector.match(/\[data-hotswap[=]"?([^"\]]+)"?\]/);
+      if (tagMatch) {
+        const tag = tagMatch[1];
+        const idx = hotSwapState.findIndex(e => e.tag === tag);
+        if (idx >= 0) hotSwapState.splice(idx, 1);
+      }
+      hotSwapState.push(payload);
+    } else {
+      hotSwapState.push(payload);
+    }
+    saveHotSwapState(hotSwapState);
+  }
+
   const sent = broadcastHotSwap(payload);
-  console.log(`[hot-swap] pushed to ${sent} client(s)`);
-  res.json({ ok: true, clients: sent });
+  console.log(`[hot-swap] pushed to ${sent} client(s), ${hotSwapState.length} persisted entries`);
+  res.json({ ok: true, clients: sent, persisted: hotSwapState.length });
+});
+
+// View persisted state
+app.get('/hot-swap/state', (_req, res) => {
+  res.json(hotSwapState);
+});
+
+// Clear persisted state
+app.delete('/hot-swap/state', (_req, res) => {
+  hotSwapState.length = 0;
+  saveHotSwapState(hotSwapState);
+  res.json({ ok: true, cleared: true });
 });
 
 server.listen(PORT, HOST, () => {
