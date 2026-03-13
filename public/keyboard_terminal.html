@@ -108,16 +108,14 @@
         schema: {
           canvas: { type: "selector" },
           mode: { type: "string", default: "raw" },
+          render: { type: "string", default: "text" }, // "text" or "browser"
           html: {
             type: "string",
             default:
               "<html><body><h1>Hello World</h1><p>This is raw HTML!</p></body></html>",
           },
           url: { type: "string", default: "" },
-          proxyBase: {
-            type: "string",
-            default: "http://localhost:3000/proxy?url=",
-          },
+          proxyBase: { type: "string", default: "/proxy?url=" },
           interval: { default: 100 },
         },
         init() {
@@ -129,6 +127,9 @@
           this.nextDraw = 0;
           this.content = null;
           this.iframe = null;
+          this._browserCanvas = null;
+          this._h2cLoaded = false;
+          this._h2cLoading = false;
           this.loadContent();
         },
         async loadContent() {
@@ -169,21 +170,52 @@
         h1,h2,h3 { color:#00ddff; margin:8px 0; }
         a { color:#ff44aa; }
         p { margin:6px 0; }
+        pre { color:#00ffaa; white-space:pre-wrap; }
+        code { color:#ffaa00; }
+        img { max-width:100%; }
       </style></head><body>${html}</body></html>
     `);
           doc.close();
           this.content = "loaded";
+          // If browser render mode, snapshot with html2canvas after load
+          if (this.data.render === "browser") {
+            this._loadHtml2Canvas().then(() => this._snapshot());
+          }
+        },
+        async _loadHtml2Canvas() {
+          if (this._h2cLoaded || this._h2cLoading) return;
+          if (window.html2canvas) { this._h2cLoaded = true; return; }
+          this._h2cLoading = true;
+          return new Promise((resolve) => {
+            const s = document.createElement("script");
+            s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+            s.onload = () => { this._h2cLoaded = true; this._h2cLoading = false; resolve(); };
+            s.onerror = () => { this._h2cLoading = false; resolve(); };
+            document.head.appendChild(s);
+          });
+        },
+        async _snapshot() {
+          if (!this._h2cLoaded || !window.html2canvas || !this.iframe) return;
+          try {
+            const body = this.iframe.contentDocument.body;
+            this._browserCanvas = await window.html2canvas(body, {
+              width: 512, height: 512,
+              backgroundColor: "#0a0a14",
+              useCORS: true, logging: false,
+            });
+            console.log("[html-display] browser snapshot rendered");
+          } catch (e) {
+            console.warn("[html-display] html2canvas error:", e.message);
+          }
         },
         tick(time) {
           if (!this.ctx || !this.iframe || time < this.nextDraw) return;
-          const w = 512,
-            h = 512,
-            ctx = this.ctx;
-          try {
-            ctx.fillStyle = "#0a0a14";
-            ctx.fillRect(0, 0, w, h);
-            ctx.drawImage(this.iframe.contentWindow.document.body, 0, 0);
-          } catch (e) {
+          const w = 512, h = 512, ctx = this.ctx;
+          // Browser render mode: draw html2canvas snapshot
+          if (this.data.render === "browser" && this._browserCanvas) {
+            ctx.drawImage(this._browserCanvas, 0, 0, w, h);
+          } else {
+            // Text render: extract innerText and draw as monospace lines
             ctx.fillStyle = "#0a0a14";
             ctx.fillRect(0, 0, w, h);
             const text =
@@ -194,9 +226,10 @@
             lines
               .slice(0, 30)
               .forEach((line, i) =>
-                ctx.fillText(line.slice(0, 55), 12, 24 + i * 16),
+                ctx.fillText(line.slice(0, 55), 12, 40 + i * 16),
               );
           }
+          // CRT scanlines
           ctx.strokeStyle = "#00ffaa08";
           for (let y = 0; y < h; y += 3) {
             ctx.beginPath();
@@ -204,12 +237,14 @@
             ctx.lineTo(w, y);
             ctx.stroke();
           }
+          // Header bar
           ctx.fillStyle = "#001520";
           ctx.fillRect(0, 0, w, 28);
           ctx.font = "bold 11px monospace";
           ctx.fillStyle = "#00aaff";
+          const label = this.data.render === "browser" ? "BROWSER" : "TEXT";
           ctx.fillText(
-            `HTML DISPLAY // ${this.data.mode.toUpperCase()}`,
+            `WEB-01 // ${this.data.mode.toUpperCase()} // ${label}`,
             10,
             18,
           );
