@@ -1,0 +1,15 @@
+{
+  "name": "vr-terminal-aframe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Interactive shell terminal in A-Frame VR using xterm.js and node-pty",
+  "scripts": {
+    "start": "node server/server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "node-pty": "^1.0.0",
+    "ws": "^8.18.1"
+  }
+}

@@ -1,0 +1,2146 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Orbital Security Station - VR Terminal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #000;
+        color: #00ffaa;
+        font-family: "Courier New", monospace;
+      }
+      body {
+        display: flex;
+      }
+      #hud-wrapper {
+        flex: 1;
+        display: flex;
+      }
+      a-scene {
+        flex: 1;
+      }
+      #xterm-host {
+        /* xterm needs a DOM element but we read its buffer directly,
+           so the visual output is irrelevant */
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        opacity: 0;
+        pointer-events: none;
+      }
+      #xterm-root {
+        width: 100%;
+        height: 100%;
+        background: #0a0f14;
+      }
+    </style>
+    <script>
+      // Hot-swap channel (SSE) - inject code/entities without page reload
+      // Uses SSE instead of WebSocket to work with self-signed certs on visionOS
+      (function() {
+        var reconnectTimer;
+        function connect() {
+          var es = new EventSource('/hot-swap/stream');
+          es.onmessage = function(e) {
+            var msg;
+            try { msg = JSON.parse(e.data); } catch { return; }
+
+            if (msg.type === 'connected') {
+              console.log('[hot-swap] SSE connected');
+              return;
+            }
+
+            if (msg.type === 'eval' && msg.code) {
+              try {
+                console.log('[hot-swap] eval:', msg.code.slice(0, 80) + '...');
+                new Function(msg.code)();
+              } catch (err) {
+                console.error('[hot-swap] eval error:', err);
+              }
+            }
+            else if (msg.type === 'remove' && msg.selector) {
+              document.querySelectorAll(msg.selector).forEach(function(el) {
+                console.log('[hot-swap] removing:', el);
+                el.parentNode.removeChild(el);
+              });
+            }
+            else if (msg.type === 'entities' && msg.html) {
+              var scene = document.querySelector('a-scene');
+              if (scene) {
+                if (msg.tag) {
+                  scene.querySelectorAll('[data-hotswap="' + msg.tag + '"]').forEach(function(el) {
+                    el.parentNode.removeChild(el);
+                  });
+                }
+                var tmp = document.createElement('div');
+                tmp.innerHTML = msg.html;
+                while (tmp.firstElementChild) {
+                  var el = tmp.firstElementChild;
+                  if (msg.tag) el.setAttribute('data-hotswap', msg.tag);
+                  scene.appendChild(el);
+                  console.log('[hot-swap] injected entity:', el.tagName, el.id || '');
+                }
+              }
+            }
+          };
+          es.onerror = function() {
+            console.log('[hot-swap] SSE error, reconnecting in 3s...');
+            es.close();
+            clearTimeout(reconnectTimer);
+            reconnectTimer = setTimeout(connect, 3000);
+          };
+        }
+        connect();
+      })();
+    </script>
+    <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+    <script>
+      // ═══════════════════════════════════════════════════════════════════
+      // HTML DISPLAY SYSTEM
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("html-display", {
+        schema: {
+          canvas: { type: "selector" },
+          mode: { type: "string", default: "raw" },
+          html: {
+            type: "string",
+            default:
+              "<html><body><h1>Hello World</h1><p>This is raw HTML!</p></body></html>",
+          },
+          url: { type: "string", default: "" },
+          proxyBase: {
+            type: "string",
+            default: "http://localhost:3000/proxy?url=",
+          },
+          interval: { default: 100 },
+        },
+        init() {
+          this.canvas = this.data.canvas;
+          if (!this.canvas) return;
+          this.canvas.width = 512;
+          this.canvas.height = 512;
+          this.ctx = this.canvas.getContext("2d");
+          this.nextDraw = 0;
+          this.content = null;
+          this.iframe = null;
+          this.loadContent();
+        },
+        async loadContent() {
+          const mode = this.data.mode;
+          let html = "";
+          if (mode === "raw") {
+            html = this.data.html;
+          } else if (mode === "local") {
+            try {
+              const resp = await fetch(this.data.url);
+              html = await resp.text();
+            } catch (e) {
+              html = `<p style="color:red">Error loading: ${e.message}</p>`;
+            }
+          } else if (mode === "proxy") {
+            try {
+              const proxyUrl =
+                this.data.proxyBase + encodeURIComponent(this.data.url);
+              const resp = await fetch(proxyUrl);
+              html = await resp.text();
+            } catch (e) {
+              html = `<p style="color:red">Proxy error: ${e.message}</p>`;
+            }
+          }
+          this.renderHTML(html);
+        },
+        renderHTML(html) {
+          if (this.iframe) document.body.removeChild(this.iframe);
+          this.iframe = document.createElement("iframe");
+          this.iframe.style.cssText =
+            "position:absolute;left:-9999px;width:512px;height:512px;border:none;";
+          document.body.appendChild(this.iframe);
+          const doc = this.iframe.contentDocument;
+          doc.open();
+          doc.write(`
+      <html><head><style>
+        body { background:#0a0a14; color:#00ffaa; font-family:monospace; font-size:14px; padding:12px; margin:0; }
+        h1,h2,h3 { color:#00ddff; margin:8px 0; }
+        a { color:#ff44aa; }
+        p { margin:6px 0; }
+      </style></head><body>${html}</body></html>
+    `);
+          doc.close();
+          this.content = "loaded";
+        },
+        tick(time) {
+          if (!this.ctx || !this.iframe || time < this.nextDraw) return;
+          const w = 512,
+            h = 512,
+            ctx = this.ctx;
+          try {
+            ctx.fillStyle = "#0a0a14";
+            ctx.fillRect(0, 0, w, h);
+            ctx.drawImage(this.iframe.contentWindow.document.body, 0, 0);
+          } catch (e) {
+            ctx.fillStyle = "#0a0a14";
+            ctx.fillRect(0, 0, w, h);
+            const text =
+              this.iframe.contentDocument?.body?.innerText || "Loading...";
+            ctx.fillStyle = "#00ffaa";
+            ctx.font = "13px monospace";
+            const lines = text.split("\n");
+            lines
+              .slice(0, 30)
+              .forEach((line, i) =>
+                ctx.fillText(line.slice(0, 55), 12, 24 + i * 16),
+              );
+          }
+          ctx.strokeStyle = "#00ffaa08";
+          for (let y = 0; y < h; y += 3) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+          }
+          ctx.fillStyle = "#001520";
+          ctx.fillRect(0, 0, w, 28);
+          ctx.font = "bold 11px monospace";
+          ctx.fillStyle = "#00aaff";
+          ctx.fillText(
+            `HTML DISPLAY // ${this.data.mode.toUpperCase()}`,
+            10,
+            18,
+          );
+          this.nextDraw = time + this.data.interval;
+        },
+        remove() {
+          if (this.iframe) document.body.removeChild(this.iframe);
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // KEYBOARD SYSTEM — routes keys to the vr-terminal PTY
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerSystem("virtual-keyboard", {
+        init() {
+          this.keyboardEl = null;
+          this.terminalEl = null; // set by vr-terminal component on init
+          this.isRaised = true;
+          this.shiftActive = false;
+          this.capsLock = false;
+          this.ctrlActive = false;
+          this.altActive = false;
+          this.keys = [];
+          this.audioCtx = new (
+            window.AudioContext || window.webkitAudioContext
+          )();
+        },
+
+        playClick() {
+          if (this.audioCtx.state === "suspended") {
+            this.audioCtx.resume();
+          }
+          const t = this.audioCtx.currentTime;
+          const osc = this.audioCtx.createOscillator();
+          const gain = this.audioCtx.createGain();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(800, t);
+          osc.frequency.exponentialRampToValueAtTime(300, t + 0.05);
+          gain.gain.setValueAtTime(0.2, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+          osc.connect(gain);
+          gain.connect(this.audioCtx.destination);
+          osc.start(t);
+          osc.stop(t + 0.05);
+
+          const osc2 = this.audioCtx.createOscillator();
+          const gain2 = this.audioCtx.createGain();
+          osc2.type = "sine";
+          osc2.frequency.setValueAtTime(200, t);
+          osc2.frequency.exponentialRampToValueAtTime(50, t + 0.1);
+          gain2.gain.setValueAtTime(0.4, t);
+          gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+          osc2.connect(gain2);
+          gain2.connect(this.audioCtx.destination);
+          osc2.start(t);
+          osc2.stop(t + 0.1);
+        },
+
+        registerKey(el) {
+          this.keys.push(el);
+        },
+
+        sendKey(key) {
+          const termComp = this.terminalEl?.components?.["vr-terminal"];
+          if (!termComp) {
+            console.warn("[keyboard] sendKey: no vr-terminal component found. terminalEl:", this.terminalEl);
+            return;
+          }
+
+          if (key === "ENT") {
+            termComp.sendInput("\r");
+          } else if (key === "BK") {
+            termComp.sendInput("\x7f");
+          } else if (key === "SPC") {
+            termComp.sendInput(" ");
+          } else if (key === "TAB") {
+            termComp.sendInput("\t");
+          } else if (key === "SH") {
+            this.shiftActive = !this.shiftActive;
+            this.updateLabels();
+          } else if (key === "CAP") {
+            this.capsLock = !this.capsLock;
+            this.updateLabels();
+          } else if (key === "CT") {
+            this.ctrlActive = !this.ctrlActive;
+          } else if (key === "AL") {
+            this.altActive = !this.altActive;
+          } else if (key.length === 1) {
+            let c = key.toLowerCase();
+            if (this.shiftActive || this.capsLock) {
+              c = this.shifted(key);
+              if (this.shiftActive) {
+                this.shiftActive = false;
+                this.updateLabels();
+              }
+            }
+            if (this.ctrlActive) {
+              const code = c.toLowerCase().charCodeAt(0);
+              if (code >= 97 && code <= 122) {
+                c = String.fromCharCode(code - 96);
+              }
+              this.ctrlActive = false;
+            } else if (this.altActive) {
+              c = "\x1b" + c;
+              this.altActive = false;
+            }
+            termComp.sendInput(c);
+          }
+        },
+
+        shifted(k) {
+          const m = {
+            1: "!",
+            2: "@",
+            3: "#",
+            4: "$",
+            5: "%",
+            6: "^",
+            7: "&",
+            8: "*",
+            9: "(",
+            0: ")",
+            "-": "_",
+            "=": "+",
+            "[": "{",
+            "]": "}",
+            "\\": "|",
+            ";": ":",
+            "'": '"',
+            ",": "<",
+            ".": ">",
+            "/": "?",
+            "`": "~",
+          };
+          return m[k] || (k >= "a" && k <= "z" ? k.toUpperCase() : k);
+        },
+
+        updateLabels() {
+          this.keys.forEach((k) => {
+            const c = k.components["mechanical-key"];
+            if (c && c.data.key.length === 1) {
+              const sh = this.shiftActive || this.capsLock;
+              c.setLabel(
+                sh ? this.shifted(c.data.key) : c.data.key.toLowerCase(),
+              );
+            }
+          });
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // HAND TRACKING - DELIBERATE INPUT MODEL
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("hand-typer", {
+        schema: { hand: { type: "string", default: "right" } },
+        init() {
+          this.tips = [];
+          this.orbs = [];
+          this.ready = false;
+          this.tempVec = new THREE.Vector3();
+          this.keyVec = new THREE.Vector3();
+          this.kbSystem = this.el.sceneEl.systems["virtual-keyboard"];
+          this.DWELL_MS = 70;
+          this.LOCK_EXIT_DIST = 0.032;
+          this.COOLDOWN_MS = 180;
+          this.PRESS_DEPTH = -0.005;
+          this.MAX_VELOCITY = 0.18;
+          this.fingers = {};
+          this.el.addEventListener("model-loaded", () =>
+            setTimeout(() => this.setup(), 600),
+          );
+        },
+        setup() {
+          const mesh = this.el.getObject3D("mesh");
+          if (!mesh) return;
+          const names = [
+            "index-finger-tip",
+            "middle-finger-tip",
+            "ring-finger-tip",
+            "thumb-tip",
+          ];
+          names.forEach((name, i) => {
+            mesh.traverse((node) => {
+              if (
+                (node.name.includes(name) || node.name.endsWith(name)) &&
+                !this.tips[i]
+              ) {
+                this.tips[i] = node;
+                const orb = new THREE.Mesh(
+                  new THREE.SphereGeometry(0.01),
+                  new THREE.MeshBasicMaterial({
+                    color: 0x00ffaa,
+                    transparent: true,
+                    opacity: 0.6,
+                  }),
+                );
+                node.add(orb);
+                this.orbs[i] = orb;
+                const fid = `${this.data.hand}-${i}`;
+                this.fingers[fid] = {
+                  lockedKey: null,
+                  lockedKeyPos: new THREE.Vector3(),
+                  dwellKey: null,
+                  dwellStart: 0,
+                  lastPressTime: 0,
+                  prevPos: new THREE.Vector3(),
+                  velocity: 0,
+                };
+              }
+            });
+          });
+          this.ready = true;
+        },
+        tick() {
+          if (!this.ready || !this.kbSystem.isRaised) return;
+          const keys = this.kbSystem.keys;
+          if (keys.length === 0) return;
+          const now = performance.now();
+          this.tips.forEach((tip, i) => {
+            if (!tip) return;
+            const fid = `${this.data.hand}-${i}`;
+            const state = this.fingers[fid];
+            if (!state) return;
+            tip.getWorldPosition(this.tempVec);
+            state.velocity = this.tempVec.distanceTo(state.prevPos);
+            state.prevPos.copy(this.tempVec);
+            if (state.velocity > this.MAX_VELOCITY) {
+              this.setOrbState(i, "fast");
+              return;
+            }
+            if (state.lockedKey) {
+              const distFromLock = this.tempVec.distanceTo(state.lockedKeyPos);
+              if (distFromLock < this.LOCK_EXIT_DIST) {
+                this.setOrbState(i, "locked");
+                return;
+              } else {
+                state.lockedKey.components["mechanical-key"]?.release();
+                state.lockedKey = null;
+                state.dwellKey = null;
+                state.dwellStart = 0;
+              }
+            }
+            let candidate = null;
+            let bestDist = Infinity;
+            for (let key of keys) {
+              const comp = key.components["mechanical-key"];
+              if (!comp) continue;
+              key.object3D.getWorldPosition(this.keyVec);
+              const hw = comp.data.width / 2 - 0.004;
+              const hd = comp.data.depth / 2 - 0.004;
+              const keyTop = this.keyVec.y + comp.data.height;
+              const dx = Math.abs(this.tempVec.x - this.keyVec.x);
+              const dz = Math.abs(this.tempVec.z - this.keyVec.z);
+              const dy = this.tempVec.y - keyTop;
+              if (dx < hw && dz < hd && dy < this.PRESS_DEPTH && dy > -0.025) {
+                const dist = dx + dz;
+                if (dist < bestDist) {
+                  candidate = key;
+                  bestDist = dist;
+                }
+              }
+            }
+            if (candidate) {
+              if (candidate === state.dwellKey) {
+                const dwellTime = now - state.dwellStart;
+                const cooldownOk = now - state.lastPressTime > this.COOLDOWN_MS;
+                if (dwellTime >= this.DWELL_MS && cooldownOk) {
+                  candidate.components["mechanical-key"]?.press();
+                  state.lockedKey = candidate;
+                  candidate.object3D.getWorldPosition(state.lockedKeyPos);
+                  state.lastPressTime = now;
+                  state.dwellKey = null;
+                  this.setOrbState(i, "fired");
+                  this.kbSystem.sendKey(
+                    candidate.components["mechanical-key"].data.key,
+                  );
+                } else {
+                  const progress = Math.min(dwellTime / this.DWELL_MS, 1);
+                  this.setOrbState(i, "dwell", progress);
+                }
+              } else {
+                state.dwellKey = candidate;
+                state.dwellStart = now;
+                this.setOrbState(i, "hover");
+              }
+            } else {
+              state.dwellKey = null;
+              state.dwellStart = 0;
+              this.setOrbState(i, "idle");
+            }
+          });
+        },
+        setOrbState(i, mode, progress = 0) {
+          const orb = this.orbs[i];
+          if (!orb) return;
+          switch (mode) {
+            case "idle":
+              orb.material.color.setHex(0x00ffaa);
+              orb.material.opacity = 0.3;
+              orb.scale.setScalar(1);
+              break;
+            case "hover":
+              orb.material.color.setHex(0x00ffaa);
+              orb.material.opacity = 0.6;
+              orb.scale.setScalar(1.2);
+              break;
+            case "dwell":
+              orb.material.color.setHex(0xffff00);
+              orb.material.opacity = 0.5 + progress * 0.5;
+              orb.scale.setScalar(1.2 + progress * 0.8);
+              break;
+            case "fired":
+              orb.material.color.setHex(0x00ff00);
+              orb.material.opacity = 1;
+              orb.scale.setScalar(2.5);
+              break;
+            case "locked":
+              orb.material.color.setHex(0xff8800);
+              orb.material.opacity = 0.8;
+              orb.scale.setScalar(1.5);
+              break;
+            case "fast":
+              orb.material.color.setHex(0xff0000);
+              orb.material.opacity = 0.4;
+              orb.scale.setScalar(0.8);
+              break;
+          }
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // MECHANICAL KEY
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("mechanical-key", {
+        schema: {
+          key: { type: "string" },
+          label: { type: "string", default: "" },
+          width: { default: 0.04 },
+          height: { default: 0.014 },
+          depth: { default: 0.038 },
+        },
+        init() {
+          this.system = this.el.sceneEl.systems["virtual-keyboard"];
+          this.system.registerKey(this.el);
+          this.pressed = false;
+          this.baseY = 0;
+          this.pressedY = -0.005;
+          this.keyMesh = document.createElement("a-box");
+          this.keyMesh.setAttribute("width", this.data.width - 0.003);
+          this.keyMesh.setAttribute("height", this.data.height);
+          this.keyMesh.setAttribute("depth", this.data.depth - 0.003);
+          this.keyMesh.setAttribute("position", `0 ${this.data.height / 2} 0`);
+          this.keyMesh.setAttribute(
+            "material",
+            "color:#1a1f28; roughness:0.35; metalness:0.7",
+          );
+          this.el.appendChild(this.keyMesh);
+          const displayLabel = this.data.label || this.data.key;
+          this.createLabel(displayLabel);
+        },
+        createLabel(text) {
+          if (!text || text.trim() === "") return;
+          this.labelEl = document.createElement("a-entity");
+          this.labelEl.setAttribute(
+            "position",
+            `0 ${this.data.height + 0.001} 0`,
+          );
+          this.labelEl.setAttribute("rotation", "-90 0 0");
+          const scale = 0.35;
+          this.labelEl.setAttribute("text", {
+            value: text,
+            align: "center",
+            baseline: "center",
+            color: "#00ffaa",
+            width: 0.5,
+            wrapCount: 40,
+          });
+          this.labelEl.setAttribute("scale", `${scale} ${scale} ${scale}`);
+          this.el.appendChild(this.labelEl);
+        },
+        setLabel(text) {
+          if (this.labelEl) {
+            this.labelEl.setAttribute("text", "value", text);
+          }
+        },
+        press() {
+          if (this.pressed) return;
+          this.pressed = true;
+          if (this.system.playClick) this.system.playClick();
+          this.el.object3D.position.y = this.pressedY;
+          this.keyMesh.setAttribute("material", "emissive", "#00ffaa");
+          this.keyMesh.setAttribute("material", "emissiveIntensity", 0.6);
+        },
+        release() {
+          if (!this.pressed) return;
+          this.pressed = false;
+          this.el.object3D.position.y = this.baseY;
+          this.keyMesh.setAttribute("material", "emissive", "#000");
+          this.keyMesh.setAttribute("material", "emissiveIntensity", 0);
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // KEYBOARD LAYOUT
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("virtual-keyboard", {
+        init() {
+          this.system = this.el.sceneEl.systems["virtual-keyboard"];
+          this.system.keyboardEl = this.el;
+          this.build();
+        },
+        build() {
+          const rows = [
+            [
+              { k: "`" },
+              { k: "1" },
+              { k: "2" },
+              { k: "3" },
+              { k: "4" },
+              { k: "5" },
+              { k: "6" },
+              { k: "7" },
+              { k: "8" },
+              { k: "9" },
+              { k: "0" },
+              { k: "-" },
+              { k: "=" },
+              { k: "BK", l: "Del", w: 1.5 },
+            ],
+            [
+              { k: "TAB", l: "Tab", w: 1.2 },
+              { k: "Q" },
+              { k: "W" },
+              { k: "E" },
+              { k: "R" },
+              { k: "T" },
+              { k: "Y" },
+              { k: "U" },
+              { k: "I" },
+              { k: "O" },
+              { k: "P" },
+              { k: "[" },
+              { k: "]" },
+              { k: "\\", w: 1.2 },
+            ],
+            [
+              { k: "CAP", l: "Cap", w: 1.4 },
+              { k: "A" },
+              { k: "S" },
+              { k: "D" },
+              { k: "F" },
+              { k: "G" },
+              { k: "H" },
+              { k: "J" },
+              { k: "K" },
+              { k: "L" },
+              { k: ";" },
+              { k: "'" },
+              { k: "ENT", l: "Ret", w: 1.8 },
+            ],
+            [
+              { k: "SH", l: "Shf", w: 1.8 },
+              { k: "Z" },
+              { k: "X" },
+              { k: "C" },
+              { k: "V" },
+              { k: "B" },
+              { k: "N" },
+              { k: "M" },
+              { k: "," },
+              { k: "." },
+              { k: "/" },
+              { k: "SH", l: "Shf", w: 1.8 },
+            ],
+            [
+              { k: "CT", l: "Ctl", w: 1.4 },
+              { k: "AL", l: "Alt", w: 1.2 },
+              { k: "SPC", l: " ", w: 6 },
+              { k: "AL", l: "Alt", w: 1.2 },
+              { k: "CT", l: "Ctl", w: 1.4 },
+            ],
+          ];
+          const keyW = 0.036;
+          const keyD = 0.036;
+          const gap = 0.004;
+          const rowCount = rows.length;
+          const totalDepth = rowCount * (keyD + gap);
+          let maxUnits = 0;
+          rows.forEach((row) => {
+            let units = 0;
+            row.forEach((k) => (units += k.w || 1));
+            if (units > maxUnits) maxUnits = units;
+          });
+          const totalWidth = maxUnits * (keyW + gap);
+          const base = document.createElement("a-box");
+          base.setAttribute("width", totalWidth + 0.02);
+          base.setAttribute("height", 0.01);
+          base.setAttribute("depth", totalDepth + 0.015);
+          base.setAttribute("position", "0 -0.005 0");
+          base.setAttribute(
+            "material",
+            "color:#0d1017; metalness:0.85; roughness:0.25",
+          );
+          this.el.appendChild(base);
+          const glow = document.createElement("a-box");
+          glow.setAttribute("width", totalWidth + 0.025);
+          glow.setAttribute("height", 0.003);
+          glow.setAttribute("depth", totalDepth + 0.02);
+          glow.setAttribute("position", "0 0.001 0");
+          glow.setAttribute(
+            "material",
+            "color:#00ffaa; shader:flat; transparent:true; opacity:0.15",
+          );
+          this.el.appendChild(glow);
+          const startZ = -totalDepth / 2 + keyD / 2 + 0.005;
+          rows.forEach((row, rIdx) => {
+            let rowUnits = 0;
+            row.forEach((k) => (rowUnits += k.w || 1));
+            const rowWidth = rowUnits * (keyW + gap) - gap;
+            let x = -rowWidth / 2;
+            const z = startZ + rIdx * (keyD + gap);
+            row.forEach((keyDef) => {
+              const wMult = keyDef.w || 1;
+              const actualW = keyW * wMult + gap * (wMult - 1);
+              const keyEl = document.createElement("a-entity");
+              keyEl.setAttribute("position", `${x + actualW / 2} 0.005 ${z}`);
+              keyEl.setAttribute("mechanical-key", {
+                key: keyDef.k,
+                label: keyDef.l !== undefined ? keyDef.l : keyDef.k,
+                width: actualW,
+                height: 0.012,
+                depth: keyD,
+              });
+              this.el.appendChild(keyEl);
+              x += actualW + gap;
+            });
+          });
+        },
+      });
+
+      // CRT display (used by HUD monitors)
+      AFRAME.registerComponent("crt-display", {
+        schema: { canvas: { type: "selector" } },
+        init() {
+          if (!this.data.canvas) return;
+          const tex = new THREE.CanvasTexture(this.data.canvas);
+          tex.minFilter = THREE.LinearFilter;
+          this.el.getObject3D("mesh").material.map = tex;
+          this.tex = tex;
+        },
+        tick() {
+          if (this.tex) this.tex.needsUpdate = true;
+        },
+      });
+
+      // HUD draw (used by side monitors)
+      AFRAME.registerComponent("hud-draw", {
+        schema: {
+          canvas: { type: "selector" },
+          feed: { type: "string", default: "main" },
+        },
+        init() {
+          this.canvas = this.data.canvas;
+          if (!this.canvas) return;
+          this.canvas.width = 512;
+          this.canvas.height = 512;
+          this.ctx = this.canvas.getContext("2d");
+          this.nextDraw = 0;
+        },
+        tick(time) {
+          if (!this.ctx || time < this.nextDraw) return;
+          const w = 512,
+            h = 512,
+            ctx = this.ctx;
+          ctx.fillStyle = "#050a10";
+          ctx.fillRect(0, 0, w, h);
+          ctx.strokeStyle = "#00ffaa10";
+          for (let y = 0; y < h; y += 4) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+          }
+          ctx.fillStyle = "#001520";
+          ctx.fillRect(0, 0, w, 32);
+          ctx.font = "bold 12px monospace";
+          ctx.fillStyle = "#00ffaa";
+          ctx.fillText(
+            `${this.data.feed.toUpperCase()} // ${new Date().toISOString().slice(11, 19)}`,
+            10,
+            22,
+          );
+          const stats = [
+            "REACTOR: 94%",
+            "SHIELDS: 87%",
+            "LIFE SUP: 99%",
+            "COMMS: OK",
+          ];
+          ctx.font = "14px monospace";
+          stats.forEach((s, i) => {
+            ctx.fillStyle = "#00ffaa";
+            ctx.fillText(s, 20, 65 + i * 28);
+          });
+          this.nextDraw = time + 100;
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // STARFIELD - Thousands of stars surrounding the station
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("starfield", {
+        schema: {
+          count: { default: 3000 },
+          radius: { default: 80 },
+          size: { default: 0.15 },
+        },
+        init() {
+          const count = this.data.count;
+          const radius = this.data.radius;
+          const positions = new Float32Array(count * 3);
+          const colors = new Float32Array(count * 3);
+          const sizes = new Float32Array(count);
+
+          for (let i = 0; i < count; i++) {
+            // Distribute on a sphere shell
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            const r = radius * (0.8 + Math.random() * 0.2);
+
+            positions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+            positions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+            positions[i * 3 + 2] = r * Math.cos(phi);
+
+            // Subtle color variation: white, blue-white, warm-white
+            const temp = Math.random();
+            if (temp < 0.6) {
+              colors[i * 3] = 0.9 + Math.random() * 0.1;
+              colors[i * 3 + 1] = 0.9 + Math.random() * 0.1;
+              colors[i * 3 + 2] = 1.0;
+            } else if (temp < 0.85) {
+              colors[i * 3] = 0.7 + Math.random() * 0.1;
+              colors[i * 3 + 1] = 0.8 + Math.random() * 0.1;
+              colors[i * 3 + 2] = 1.0;
+            } else {
+              colors[i * 3] = 1.0;
+              colors[i * 3 + 1] = 0.85 + Math.random() * 0.1;
+              colors[i * 3 + 2] = 0.7 + Math.random() * 0.1;
+            }
+
+            sizes[i] = this.data.size * (0.3 + Math.random() * 0.7);
+          }
+
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+          geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+          geometry.setAttribute("size", new THREE.BufferAttribute(sizes, 1));
+
+          const material = new THREE.PointsMaterial({
+            size: this.data.size,
+            vertexColors: true,
+            transparent: true,
+            opacity: 0.9,
+            sizeAttenuation: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+
+          this.points = new THREE.Points(geometry, material);
+          this.el.object3D.add(this.points);
+        },
+        tick() {
+          // Very slow rotation for subtle motion
+          this.points.rotation.y += 0.00003;
+          this.points.rotation.x += 0.00001;
+        },
+        remove() {
+          this.el.object3D.remove(this.points);
+          this.points.geometry.dispose();
+          this.points.material.dispose();
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // EARTH - Glowing planet below the station
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("orbital-earth", {
+        init() {
+          // Earth body
+          const earthGeo = new THREE.SphereGeometry(8, 64, 64);
+          const earthMat = new THREE.MeshStandardMaterial({
+            color: 0x1a4488,
+            emissive: 0x0a2244,
+            emissiveIntensity: 0.3,
+            roughness: 0.8,
+            metalness: 0.1,
+          });
+          this.earth = new THREE.Mesh(earthGeo, earthMat);
+          this.el.object3D.add(this.earth);
+
+          // Landmass patches (simple noise-based coloring via vertex colors)
+          const pos = earthGeo.attributes.position;
+          const colors = new Float32Array(pos.count * 3);
+          for (let i = 0; i < pos.count; i++) {
+            const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+            // Simple pseudo-noise for continents
+            const n = Math.sin(x * 2.1 + 0.3) * Math.cos(y * 1.7 + 0.7) * Math.sin(z * 1.9 + 0.5);
+            const n2 = Math.sin(x * 4.3 + 1.1) * Math.cos(z * 3.7 + 2.1) * 0.5;
+            const land = (n + n2) > 0.15;
+            if (land) {
+              // Green/brown land
+              colors[i * 3] = 0.12 + Math.random() * 0.05;
+              colors[i * 3 + 1] = 0.3 + Math.random() * 0.15;
+              colors[i * 3 + 2] = 0.08;
+            } else {
+              // Ocean blue
+              colors[i * 3] = 0.05;
+              colors[i * 3 + 1] = 0.15 + Math.random() * 0.05;
+              colors[i * 3 + 2] = 0.4 + Math.random() * 0.1;
+            }
+          }
+          earthGeo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+          earthMat.vertexColors = true;
+          earthMat.needsUpdate = true;
+
+          // Atmosphere glow
+          const atmosGeo = new THREE.SphereGeometry(8.3, 48, 48);
+          const atmosMat = new THREE.MeshBasicMaterial({
+            color: 0x4488ff,
+            transparent: true,
+            opacity: 0.12,
+            side: THREE.BackSide,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+          this.atmos = new THREE.Mesh(atmosGeo, atmosMat);
+          this.el.object3D.add(this.atmos);
+
+          // Cloud layer
+          const cloudGeo = new THREE.SphereGeometry(8.08, 48, 48);
+          const cloudMat = new THREE.MeshStandardMaterial({
+            color: 0xffffff,
+            transparent: true,
+            opacity: 0.15,
+            roughness: 1,
+            metalness: 0,
+          });
+          this.clouds = new THREE.Mesh(cloudGeo, cloudMat);
+          this.el.object3D.add(this.clouds);
+        },
+        tick() {
+          // Slow rotation
+          this.earth.rotation.y += 0.0002;
+          this.clouds.rotation.y += 0.00035;
+        },
+        remove() {
+          [this.earth, this.atmos, this.clouds].forEach((m) => {
+            this.el.object3D.remove(m);
+            m.geometry.dispose();
+            m.material.dispose();
+          });
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // AMBIENT PARTICLES - Floating dust/light motes near workstation
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("ambient-particles", {
+        schema: {
+          count: { default: 60 },
+          spread: { default: 2.5 },
+          color: { type: "color", default: "#00ffaa" },
+        },
+        init() {
+          const count = this.data.count;
+          const spread = this.data.spread;
+          this.velocities = [];
+          const positions = new Float32Array(count * 3);
+
+          for (let i = 0; i < count; i++) {
+            positions[i * 3] = (Math.random() - 0.5) * spread;
+            positions[i * 3 + 1] = Math.random() * spread * 0.6 + 0.3;
+            positions[i * 3 + 2] = (Math.random() - 0.5) * spread;
+
+            this.velocities.push({
+              x: (Math.random() - 0.5) * 0.001,
+              y: (Math.random() - 0.5) * 0.0005 + 0.0002,
+              z: (Math.random() - 0.5) * 0.001,
+            });
+          }
+
+          const geometry = new THREE.BufferGeometry();
+          geometry.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+
+          const color = new THREE.Color(this.data.color);
+          const material = new THREE.PointsMaterial({
+            size: 0.008,
+            color: color,
+            transparent: true,
+            opacity: 0.4,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+
+          this.particles = new THREE.Points(geometry, material);
+          this.el.object3D.add(this.particles);
+        },
+        tick() {
+          const pos = this.particles.geometry.attributes.position;
+          const spread = this.data.spread;
+          const half = spread / 2;
+
+          for (let i = 0; i < pos.count; i++) {
+            let x = pos.getX(i) + this.velocities[i].x;
+            let y = pos.getY(i) + this.velocities[i].y;
+            let z = pos.getZ(i) + this.velocities[i].z;
+
+            // Wrap around
+            if (x > half) x = -half;
+            if (x < -half) x = half;
+            if (y > spread * 0.6 + 0.3) { y = 0.3; }
+            if (y < 0.3) { y = spread * 0.6 + 0.3; }
+            if (z > half) z = -half;
+            if (z < -half) z = half;
+
+            pos.setXYZ(i, x, y, z);
+          }
+          pos.needsUpdate = true;
+        },
+        remove() {
+          this.el.object3D.remove(this.particles);
+          this.particles.geometry.dispose();
+          this.particles.material.dispose();
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // SHOOTING STARS - Occasional meteors streaking across the sky
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("shooting-stars", {
+        schema: {
+          interval: { default: 4000 }, // avg ms between meteors
+          speed: { default: 0.8 },
+        },
+        init() {
+          this.meteors = [];
+          this.nextSpawn = performance.now() + 2000;
+          this.group = new THREE.Group();
+          this.el.object3D.add(this.group);
+        },
+        tick() {
+          const now = performance.now();
+
+          // Spawn new meteor
+          if (now > this.nextSpawn) {
+            this.spawnMeteor();
+            this.nextSpawn = now + this.data.interval * (0.3 + Math.random() * 1.4);
+          }
+
+          // Update existing meteors
+          for (let i = this.meteors.length - 1; i >= 0; i--) {
+            const m = this.meteors[i];
+            m.life -= 0.016;
+
+            m.mesh.position.addScaledVector(m.velocity, this.data.speed);
+
+            // Fade trail
+            m.mesh.material.opacity = Math.max(0, m.life / m.maxLife);
+            m.mesh.scale.x = 1 + (1 - m.life / m.maxLife) * 2;
+
+            if (m.life <= 0) {
+              this.group.remove(m.mesh);
+              m.mesh.geometry.dispose();
+              m.mesh.material.dispose();
+              this.meteors.splice(i, 1);
+            }
+          }
+        },
+        spawnMeteor() {
+          // Random position on a sphere shell
+          const theta = Math.random() * Math.PI * 2;
+          const phi = Math.acos(2 * Math.random() - 1);
+          const r = 30 + Math.random() * 20;
+
+          const start = new THREE.Vector3(
+            r * Math.sin(phi) * Math.cos(theta),
+            r * Math.sin(phi) * Math.sin(theta) + 5,
+            r * Math.cos(phi),
+          );
+
+          // Random direction with slight downward bias
+          const dir = new THREE.Vector3(
+            (Math.random() - 0.5),
+            -(Math.random() * 0.3 + 0.1),
+            (Math.random() - 0.5),
+          ).normalize();
+
+          // Streak geometry
+          const length = 0.5 + Math.random() * 1.5;
+          const geo = new THREE.BufferGeometry();
+          const verts = new Float32Array([0,0,0, -dir.x*length, -dir.y*length, -dir.z*length]);
+          geo.setAttribute("position", new THREE.BufferAttribute(verts, 3));
+
+          const brightness = 0.6 + Math.random() * 0.4;
+          const color = Math.random() > 0.7 ? 0x88ccff : 0xffffff;
+          const mat = new THREE.LineBasicMaterial({
+            color: color,
+            transparent: true,
+            opacity: brightness,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+          });
+
+          const mesh = new THREE.Line(geo, mat);
+          mesh.position.copy(start);
+
+          const maxLife = 0.8 + Math.random() * 1.2;
+          this.group.add(mesh);
+          this.meteors.push({ mesh, velocity: dir, life: maxLife, maxLife });
+        },
+        remove() {
+          this.meteors.forEach(m => {
+            m.mesh.geometry.dispose();
+            m.mesh.material.dispose();
+          });
+          this.el.object3D.remove(this.group);
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // STATION STRUCTURE - Ceiling, beams, light strips
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("station-structure", {
+        init() {
+          const g = this.el.object3D;
+
+          // === CEILING PANELS ===
+          const ceilMat = new THREE.MeshStandardMaterial({
+            color: 0x0d1117,
+            roughness: 0.6,
+            metalness: 0.8,
+          });
+
+          // Main ceiling slab (with gap in center for overhead light)
+          const ceilGeo = new THREE.BoxGeometry(4, 0.05, 3);
+          const ceil = new THREE.Mesh(ceilGeo, ceilMat);
+          ceil.position.set(0, 2.8, -0.5);
+          g.add(ceil);
+
+          // Ceiling cross beams
+          const beamMat = new THREE.MeshStandardMaterial({
+            color: 0x1a1f28,
+            roughness: 0.4,
+            metalness: 0.9,
+          });
+
+          for (let i = -1; i <= 1; i++) {
+            const beam = new THREE.Mesh(
+              new THREE.BoxGeometry(0.06, 0.15, 3),
+              beamMat,
+            );
+            beam.position.set(i * 1.2, 2.72, -0.5);
+            g.add(beam);
+          }
+
+          // Front-back beams
+          for (let i = -1; i <= 1; i += 2) {
+            const beam = new THREE.Mesh(
+              new THREE.BoxGeometry(4, 0.12, 0.06),
+              beamMat,
+            );
+            beam.position.set(0, 2.72, -0.5 + i * 1.2);
+            g.add(beam);
+          }
+
+          // === LIGHT STRIPS on ceiling ===
+          const stripMat = new THREE.MeshBasicMaterial({
+            color: 0x00ffaa,
+            transparent: true,
+            opacity: 0.3,
+          });
+
+          for (let i = -1; i <= 1; i += 2) {
+            const strip = new THREE.Mesh(
+              new THREE.BoxGeometry(2.5, 0.005, 0.04),
+              stripMat.clone(),
+            );
+            strip.position.set(0, 2.74, -0.5 + i * 0.6);
+            g.add(strip);
+          }
+
+          // === VERTICAL SUPPORT PILLARS at corners ===
+          const pillarMat = new THREE.MeshStandardMaterial({
+            color: 0x12161d,
+            roughness: 0.3,
+            metalness: 0.9,
+          });
+
+          const pillarPositions = [
+            [-1.8, 1.4, -1.8],
+            [1.8, 1.4, -1.8],
+            [-1.8, 1.4, 0.8],
+            [1.8, 1.4, 0.8],
+          ];
+
+          pillarPositions.forEach(([x, y, z]) => {
+            const pillar = new THREE.Mesh(
+              new THREE.BoxGeometry(0.08, 2.8, 0.08),
+              pillarMat,
+            );
+            pillar.position.set(x, y, z);
+            g.add(pillar);
+
+            // Accent light on pillar
+            const accent = new THREE.Mesh(
+              new THREE.BoxGeometry(0.02, 1.5, 0.02),
+              new THREE.MeshBasicMaterial({
+                color: 0x0088ff,
+                transparent: true,
+                opacity: 0.4,
+              }),
+            );
+            accent.position.set(x, y + 0.3, z);
+            g.add(accent);
+          });
+
+          // === FLOOR PANELS (metallic deck plating) ===
+          const floorMat = new THREE.MeshStandardMaterial({
+            color: 0x0a0e14,
+            roughness: 0.7,
+            metalness: 0.6,
+          });
+
+          const floor = new THREE.Mesh(
+            new THREE.BoxGeometry(4, 0.02, 3),
+            floorMat,
+          );
+          floor.position.set(0, -0.01, -0.5);
+          g.add(floor);
+
+          // Floor detail lines
+          const lineMatFloor = new THREE.MeshBasicMaterial({
+            color: 0x00ffaa,
+            transparent: true,
+            opacity: 0.08,
+          });
+
+          for (let i = -4; i <= 4; i++) {
+            const line = new THREE.Mesh(
+              new THREE.BoxGeometry(4, 0.003, 0.01),
+              lineMatFloor,
+            );
+            line.position.set(0, 0.01, -0.5 + i * 0.35);
+            g.add(line);
+          }
+
+          // Store refs for cleanup
+          this._meshes = g.children.slice();
+        },
+        remove() {
+          this._meshes?.forEach(m => {
+            this.el.object3D.remove(m);
+            m.geometry?.dispose();
+            m.material?.dispose();
+          });
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // AMBIENT AUDIO - Station hum + electronic atmosphere
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("station-ambience", {
+        init() {
+          this.started = false;
+          // Start on first user interaction (browser policy)
+          const start = () => {
+            if (this.started) return;
+            this.started = true;
+            this.createAmbience();
+            document.removeEventListener("click", start);
+            document.removeEventListener("keydown", start);
+          };
+          document.addEventListener("click", start);
+          document.addEventListener("keydown", start);
+        },
+        createAmbience() {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          this._ctx = ctx;
+
+          // Layer 1: Deep reactor hum (low drone)
+          const drone = ctx.createOscillator();
+          const droneGain = ctx.createGain();
+          drone.type = "sine";
+          drone.frequency.value = 42; // Low E
+          droneGain.gain.value = 0.06;
+          drone.connect(droneGain);
+          droneGain.connect(ctx.destination);
+          drone.start();
+
+          // Layer 2: Sub-harmonic rumble
+          const sub = ctx.createOscillator();
+          const subGain = ctx.createGain();
+          sub.type = "sine";
+          sub.frequency.value = 28;
+          subGain.gain.value = 0.04;
+          sub.connect(subGain);
+          subGain.connect(ctx.destination);
+          sub.start();
+
+          // Layer 3: Filtered noise (air system / electronics)
+          const noise = ctx.createBufferSource();
+          const bufSize = ctx.sampleRate * 2;
+          const buf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+          const data = buf.getChannelData(0);
+          for (let i = 0; i < bufSize; i++) {
+            data[i] = (Math.random() * 2 - 1) * 0.5;
+          }
+          noise.buffer = buf;
+          noise.loop = true;
+
+          const noiseFilter = ctx.createBiquadFilter();
+          noiseFilter.type = "lowpass";
+          noiseFilter.frequency.value = 200;
+          noiseFilter.Q.value = 1;
+
+          const noiseGain = ctx.createGain();
+          noiseGain.gain.value = 0.015;
+
+          noise.connect(noiseFilter);
+          noiseFilter.connect(noiseGain);
+          noiseGain.connect(ctx.destination);
+          noise.start();
+
+          // Layer 4: Occasional subtle electronic chirp
+          this._chirpInterval = setInterval(() => {
+            if (Math.random() > 0.3) return; // Only 70% chance each interval
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            const t = ctx.currentTime;
+            osc.type = "sine";
+            osc.frequency.setValueAtTime(800 + Math.random() * 2000, t);
+            osc.frequency.exponentialRampToValueAtTime(400 + Math.random() * 800, t + 0.15);
+            g.gain.setValueAtTime(0.008, t);
+            g.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+            osc.connect(g);
+            g.connect(ctx.destination);
+            osc.start(t);
+            osc.stop(t + 0.15);
+          }, 4000);
+
+          this._nodes = [drone, sub, noise];
+        },
+        remove() {
+          clearInterval(this._chirpInterval);
+          this._nodes?.forEach(n => { try { n.stop(); } catch {} });
+          this._ctx?.close();
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // DISTANT SUN - Bright star with lens-flare-like glow
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("distant-sun", {
+        init() {
+          const g = this.el.object3D;
+
+          // Core
+          const core = new THREE.Mesh(
+            new THREE.SphereGeometry(0.8, 16, 16),
+            new THREE.MeshBasicMaterial({ color: 0xffffee }),
+          );
+          g.add(core);
+
+          // Inner glow
+          const glow1 = new THREE.Mesh(
+            new THREE.SphereGeometry(2, 16, 16),
+            new THREE.MeshBasicMaterial({
+              color: 0xffeecc,
+              transparent: true,
+              opacity: 0.15,
+              blending: THREE.AdditiveBlending,
+              depthWrite: false,
+              side: THREE.BackSide,
+            }),
+          );
+          g.add(glow1);
+
+          // Outer glow
+          const glow2 = new THREE.Mesh(
+            new THREE.SphereGeometry(5, 16, 16),
+            new THREE.MeshBasicMaterial({
+              color: 0xffddaa,
+              transparent: true,
+              opacity: 0.05,
+              blending: THREE.AdditiveBlending,
+              depthWrite: false,
+              side: THREE.BackSide,
+            }),
+          );
+          g.add(glow2);
+
+          this._meshes = [core, glow1, glow2];
+        },
+        remove() {
+          this._meshes?.forEach(m => {
+            this.el.object3D.remove(m);
+            m.geometry.dispose();
+            m.material.dispose();
+          });
+        },
+      });
+    </script>
+  </head>
+  <body>
+    <div id="xterm-host" aria-hidden="true">
+      <div id="xterm-root"></div>
+    </div>
+
+    <div id="hud-wrapper">
+      <a-scene embedded vr-mode-ui="enabled:true" background="color:#01040f">
+        <a-assets>
+          <canvas id="hud-canvas-center"></canvas>
+          <canvas id="hud-canvas-left"></canvas>
+          <canvas id="hud-canvas-right"></canvas>
+          <canvas id="hud-canvas-url"></canvas>
+          <img
+            id="grid-tex"
+            src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAIklEQVQIW2NkQAKrVq36zwjjgzhhYWGMYAEYB8RmROaABADeOQ8CXl/xfgAAAABJRU5ErkJggg=="
+          />
+        </a-assets>
+
+        <a-entity id="rig">
+          <a-camera position="0 1.6 0" look-controls>
+            <a-cursor
+              color="#0ff"
+              raycaster="objects:.interactive"
+              opacity="0.7"
+            ></a-cursor>
+          </a-camera>
+          <a-entity
+            hand-tracking-controls="hand:left"
+            hand-typer="hand:left"
+          ></a-entity>
+          <a-entity
+            hand-tracking-controls="hand:right"
+            hand-typer="hand:right"
+          ></a-entity>
+        </a-entity>
+
+        <!-- Desk -->
+        <a-box
+          position="0 0.8 -0.8"
+          width="2.5"
+          height="0.05"
+          depth="1.2"
+          color="#1a1c21"
+          material="roughness:0.8;metalness:0.4"
+        ></a-box>
+
+        <!-- Keyboard -->
+        <a-entity
+          virtual-keyboard
+          position="0 0.86 -0.55"
+          rotation="-8 0 0"
+        ></a-entity>
+
+        <!-- Monitors -->
+        <a-entity position="0 1.2 -0.9">
+          <a-entity
+            position="0 0 0"
+            hud-draw="canvas:#hud-canvas-center; feed:MAIN"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-center"
+              material="shader:flat"
+            ></a-plane>
+          </a-entity>
+          <a-entity
+            position="-0.85 0 0.15"
+            rotation="0 25 0"
+            hud-draw="canvas:#hud-canvas-left; feed:SEC-A"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-left"
+              material="shader:flat"
+            ></a-plane>
+          </a-entity>
+          <a-entity
+            position="0.85 0 0.15"
+            rotation="0 -25 0"
+            hud-draw="canvas:#hud-canvas-right; feed:SEC-B"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-right"
+              material="shader:flat"
+            ></a-plane>
+          </a-entity>
+
+          <!-- TTY-01: Real PTY terminal via xterm.js -->
+          <a-entity position="0.85 0.6 0.1" rotation="-8 -25 0">
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              id="vr-term-plane"
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              material="shader:flat"
+              class="interactive"
+            ></a-plane>
+            <a-text
+              value="TTY-01"
+              position="-0.22 -0.22 0.22"
+              color="#00ffaa"
+              width="0.8"
+            ></a-text>
+          </a-entity>
+
+          <a-entity
+            position="-0.85 0.6 0.1"
+            rotation="-8 25 0"
+            html-display="canvas:#hud-canvas-url; mode:raw; html:<h1>STATION ALPHA</h1><p>Orbital altitude: 408km</p><p>Status: <span style='color:#00ff00'>NOMINAL</span></p><h2>Crew</h2><p>Commander: Chen</p><p>Pilot: Kowalski</p><p>Specialist: Okonkwo</p><h2>Systems</h2><p>Reactor: 98%</p><p>O2 Gen: 100%</p><p>Water Reclaim: 94%</p>"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-url"
+              material="shader:flat"
+            ></a-plane>
+            <a-text
+              value="WEB-01"
+              position="-0.22 -0.22 0.22"
+              color="#00aaff"
+              width="0.8"
+            ></a-text>
+          </a-entity>
+        </a-entity>
+
+        <a-plane
+          rotation="-90 0 0"
+          width="40"
+          height="40"
+          material="src:#grid-tex;repeat:100 100;transparent:true;opacity:0.3;color:#004433"
+        ></a-plane>
+        <!-- Space environment -->
+        <a-entity starfield="count:3000; radius:80; size:0.15"></a-entity>
+        <a-entity orbital-earth position="12 -18 -20" rotation="15 0 -10"></a-entity>
+        <a-entity ambient-particles="count:60; spread:2.5; color:#00ffaa" position="0 0.5 -0.5"></a-entity>
+
+        <a-light type="ambient" color="#ccffff" intensity="0.15"></a-light>
+        <a-light
+          type="point"
+          position="0 1.2 -0.8"
+          color="#00ffaa"
+          intensity="0.6"
+          distance="3"
+        ></a-light>
+        <a-light
+          type="point"
+          position="-1 2 0"
+          color="#0088ff"
+          intensity="0.3"
+          distance="5"
+        ></a-light>
+      </a-scene>
+    </div>
+
+    <script type="module">
+      import { Terminal } from "https://cdn.jsdelivr.net/npm/@xterm/xterm/+esm";
+      import { FitAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-fit/+esm";
+
+      const XTERM_ROOT = document.getElementById("xterm-root");
+
+      AFRAME.registerComponent("vr-terminal", {
+        schema: {
+          cols: { type: "int", default: 80 },
+          rows: { type: "int", default: 24 },
+          wsPath: { type: "string", default: "/pty" },
+        },
+
+        init() {
+          this.isFocused = false;
+          this._forceRender = true;
+          this.socket = null;
+          this.texture = null;
+          this.material = null;
+          this._boundKeyDown = (e) => this._handleKeyDown(e);
+
+          // Register with the virtual-keyboard system so sendKey routes here
+          const kbSystem = this.el.sceneEl.systems["virtual-keyboard"];
+          if (kbSystem) {
+            kbSystem.terminalEl = this.el;
+            console.log("[vr-terminal] registered with virtual-keyboard system");
+          } else {
+            console.warn("[vr-terminal] virtual-keyboard system not found!");
+          }
+
+          this.term = new Terminal({
+            cols: this.data.cols,
+            rows: this.data.rows,
+            convertEol: false,
+            cursorBlink: true,
+            cursorStyle: "block",
+            allowTransparency: false,
+            fontFamily:
+              'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace',
+            fontSize: 15,
+            fontWeight: 400,
+            lineHeight: 1.2,
+            scrollback: 5000,
+            theme: {
+              background: "#0a0f14",
+              foreground: "#00ffaa",
+              cursor: "#00ffaa",
+              selectionBackground: "#1d4ed8",
+              black: "#111827",
+              red: "#ff4444",
+              green: "#44ff44",
+              yellow: "#ffff44",
+              blue: "#4488ff",
+              magenta: "#d946ef",
+              cyan: "#44ffff",
+              white: "#e5e7eb",
+              brightBlack: "#475569",
+              brightRed: "#ff6666",
+              brightGreen: "#66ff66",
+              brightYellow: "#ffff66",
+              brightBlue: "#66aaff",
+              brightMagenta: "#e879f9",
+              brightCyan: "#66ffff",
+              brightWhite: "#f8fafc",
+            },
+          });
+
+          this.fitAddon = new FitAddon();
+          this.term.loadAddon(this.fitAddon);
+          this.term.open(XTERM_ROOT);
+
+          // Mirror canvas — we render xterm's buffer directly to this
+          // (bypasses xterm's DOM/canvas rendering which stalls in WebXR)
+          this.mirrorCanvas = document.createElement("canvas");
+          this.mirrorCanvas.width = 1024;
+          this.mirrorCanvas.height = 640;
+          this.mirrorCtx = this.mirrorCanvas.getContext("2d", { alpha: false });
+
+          this.texture = new THREE.CanvasTexture(this.mirrorCanvas);
+          this.texture.colorSpace = THREE.SRGBColorSpace;
+          this.texture.minFilter = THREE.LinearFilter;
+          this.texture.magFilter = THREE.LinearFilter;
+
+          // 16-color palette matching the xterm theme
+          this._palette = [
+            "#111827","#ff4444","#44ff44","#ffff44",
+            "#4488ff","#d946ef","#44ffff","#e5e7eb",
+            "#475569","#ff6666","#66ff66","#ffff66",
+            "#66aaff","#e879f9","#66ffff","#f8fafc"
+          ];
+          this._lastRender = 0;
+
+          this.bindMesh();
+          this.connect();
+
+          this.term.onData((data) => {
+            this.send({ type: "input", data });
+          });
+
+          this.term.onResize(({ cols, rows }) => {
+            this.send({ type: "resize", cols, rows });
+          });
+
+          this.el.addEventListener("click", () => {
+            this.focus();
+            // If socket is dead, click also triggers reconnect
+            if (!this.socket || this.socket.readyState > WebSocket.OPEN) {
+              this.connect();
+            }
+          });
+          this.el.addEventListener("object3dset", () => this.bindMesh());
+
+          window.addEventListener("pointerdown", (event) => {
+            const target = event.target;
+            if (
+              !(target instanceof Element) ||
+              !target.closest?.(".a-canvas")
+            )
+              return;
+            this.blur();
+          });
+
+          this.term.writeln("\x1b[1;32m╔═══════════════════════════╗\x1b[0m");
+          this.term.writeln("\x1b[1;32m║  ORBITAL SECURITY TERM    ║\x1b[0m");
+          this.term.writeln("\x1b[1;32m╚═══════════════════════════╝\x1b[0m");
+          this.term.writeln("Connecting to PTY backend...");
+        },
+
+        remove() {
+          clearTimeout(this._connectTimeout);
+          document.removeEventListener("keydown", this._boundKeyDown, true);
+          this.socket?.close();
+          this._evtSource?.close();
+          this.term?.dispose();
+          this.texture?.dispose();
+          this.material?.dispose?.();
+        },
+
+        tick(time) {
+          if (!this.texture) return;
+          // Render at ~20fps (every 50ms) — independent of browser canvas painting
+          if (time - this._lastRender < 50 && !this._forceRender) return;
+          this._lastRender = time;
+          this._forceRender = false;
+          this.renderTerminalBuffer();
+        },
+
+        bindMesh() {
+          const mesh = this.el.getObject3D("mesh");
+          if (!mesh || !this.texture) return;
+          const material = new THREE.MeshBasicMaterial({
+            map: this.texture,
+            side: THREE.DoubleSide,
+            toneMapped: false,
+          });
+          if (mesh.material) mesh.material.dispose?.();
+          mesh.material = material;
+          this.material = material;
+          this._forceRender = true;
+        },
+
+        connect() {
+          this._wsAttempts = (this._wsAttempts || 0) + 1;
+
+          // After 2 failed WebSocket attempts, switch to HTTP/SSE
+          if (this._wsAttempts > 2) {
+            this.connectHTTP();
+            return;
+          }
+
+          if (this.socket) {
+            try { this.socket.close(); } catch {}
+            this.socket = null;
+          }
+
+          const proto =
+            window.location.protocol === "https:" ? "wss:" : "ws:";
+          const url = new URL(
+            this.data.wsPath,
+            `${proto}//${window.location.host}`,
+          );
+          url.searchParams.set(
+            "cols",
+            String(this.term.cols || this.data.cols),
+          );
+          url.searchParams.set(
+            "rows",
+            String(this.term.rows || this.data.rows),
+          );
+
+          this.term.writeln(
+            `\x1b[90mWebSocket attempt ${this._wsAttempts}: ${url.href}\x1b[0m`,
+          );
+          this._forceRender = true;
+
+          this.socket = new WebSocket(url.href);
+
+          // Timeout: if stuck in CONNECTING after 4s, give up
+          this._connectTimeout = setTimeout(() => {
+            if (this.socket && this.socket.readyState === WebSocket.CONNECTING) {
+              this.term.writeln(
+                "\x1b[33mWebSocket timeout.\x1b[0m",
+              );
+              this._forceRender = true;
+              try { this.socket.close(); } catch {}
+              this.connect(); // will increment _wsAttempts
+            }
+          }, 4000);
+
+          this.socket.addEventListener("open", () => {
+            clearTimeout(this._connectTimeout);
+            this._transport = "ws";
+            this.term.writeln("\x1b[32mWebSocket connected.\x1b[0m");
+            this._forceRender = true;
+          });
+
+          this.socket.addEventListener("message", (event) => {
+            this._handleMessage(event.data);
+          });
+
+          this.socket.addEventListener("close", (ev) => {
+            clearTimeout(this._connectTimeout);
+            this.term.writeln(
+              `\x1b[33mWebSocket closed (${ev.code}).\x1b[0m`,
+            );
+            this._forceRender = true;
+            // If we were connected and lost it, try HTTP fallback directly
+            if (this._transport === "ws") {
+              this._transport = null;
+              this._wsAttempts = 3;
+              this.connect();
+            }
+          });
+
+          this.socket.addEventListener("error", () => {
+            clearTimeout(this._connectTimeout);
+          });
+        },
+
+        connectHTTP() {
+          this.term.writeln(
+            "\x1b[90mSwitching to HTTP/SSE transport…\x1b[0m",
+          );
+          this._forceRender = true;
+
+          const url = new URL("/pty/stream", window.location.href);
+          url.searchParams.set(
+            "cols",
+            String(this.term.cols || this.data.cols),
+          );
+          url.searchParams.set(
+            "rows",
+            String(this.term.rows || this.data.rows),
+          );
+
+          this._evtSource = new EventSource(url.href);
+
+          this._evtSource.addEventListener("message", (e) => {
+            this._handleMessage(e.data);
+          });
+
+          this._evtSource.addEventListener("open", () => {
+            this._transport = "http";
+            this.term.writeln("\x1b[32mSSE stream connected.\x1b[0m");
+            this._forceRender = true;
+          });
+
+          this._evtSource.addEventListener("error", () => {
+            this.term.writeln("\x1b[31mSSE error.\x1b[0m");
+            this._forceRender = true;
+          });
+        },
+
+        _handleMessage(raw) {
+          let msg;
+          try {
+            msg = JSON.parse(raw);
+          } catch {
+            return;
+          }
+          switch (msg.type) {
+            case "hello":
+              if (msg.sessionId) this._httpSessionId = msg.sessionId;
+              this.term.writeln(
+                `\x1b[90mShell: ${msg.shell} | cwd: ${msg.cwd}\x1b[0m`,
+              );
+              this.send({
+                type: "resize",
+                cols: this.term.cols,
+                rows: this.term.rows,
+              });
+              break;
+            case "output":
+              if (typeof msg.data === "string") {
+                this.term.write(msg.data);
+                this._forceRender = true;
+              }
+              break;
+            case "exit":
+              this.term.writeln(
+                `\r\n\x1b[31mPTY exited (${msg.exitCode ?? "n/a"})\x1b[0m`,
+              );
+              this._forceRender = true;
+              break;
+          }
+        },
+
+        send(message) {
+          // HTTP/SSE transport: POST input to server
+          if (this._transport === "http" && this._httpSessionId) {
+            fetch("/pty/input", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                sessionId: this._httpSessionId,
+                ...message,
+              }),
+            }).catch(() => {});
+            return;
+          }
+          // WebSocket transport
+          if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+          this.socket.send(JSON.stringify(message));
+        },
+
+        sendInput(data) {
+          if (!this._transport) {
+            this.term.write("\x1b[31m.\x1b[0m");
+            this._forceRender = true;
+            return;
+          }
+          this.send({ type: "input", data });
+          this._forceRender = true;
+        },
+
+        focus() {
+          this.isFocused = true;
+          this.term.focus();
+          const cam = document.querySelector("[wasd-controls]");
+          if (cam) cam.setAttribute("wasd-controls", "enabled", false);
+          document.addEventListener("keydown", this._boundKeyDown, true);
+          this._forceRender = true;
+        },
+
+        blur() {
+          this.isFocused = false;
+          const cam = document.querySelector("[wasd-controls]");
+          if (cam) cam.setAttribute("wasd-controls", "enabled", true);
+          document.removeEventListener("keydown", this._boundKeyDown, true);
+          this._forceRender = true;
+        },
+
+        _handleKeyDown(e) {
+          if (!this.isFocused) return;
+          if (e.metaKey) return;
+          if (
+            ["Control", "Alt", "Shift", "Meta", "CapsLock", "NumLock"].includes(
+              e.key,
+            )
+          )
+            return;
+
+          e.preventDefault();
+          e.stopPropagation();
+
+          let data = "";
+
+          if (e.ctrlKey && !e.altKey) {
+            if (e.key === "v" || e.key === "V") {
+              navigator.clipboard
+                .readText()
+                .then((text) => {
+                  if (text) {
+                    this.send({ type: "input", data: text });
+                    this._forceRender = true;
+                  }
+                })
+                .catch(() => {});
+              return;
+            }
+            const lower = e.key.toLowerCase();
+            if (lower >= "a" && lower <= "z") {
+              data = String.fromCharCode(lower.charCodeAt(0) - 96);
+            } else if (e.key === "[") {
+              data = "\x1b";
+            } else if (e.key === "\\") {
+              data = "\x1c";
+            } else if (e.key === "]") {
+              data = "\x1d";
+            }
+          } else if (e.altKey && !e.ctrlKey) {
+            if (e.key.length === 1) data = "\x1b" + e.key;
+          } else if (e.key.length === 1) {
+            data = e.key;
+          } else {
+            switch (e.key) {
+              case "Enter":
+                data = "\r";
+                break;
+              case "Backspace":
+                data = "\x7f";
+                break;
+              case "Tab":
+                data = e.shiftKey ? "\x1b[Z" : "\t";
+                break;
+              case "Escape":
+                data = "\x1b";
+                break;
+              case "ArrowUp":
+                data = "\x1b[A";
+                break;
+              case "ArrowDown":
+                data = "\x1b[B";
+                break;
+              case "ArrowRight":
+                data = "\x1b[C";
+                break;
+              case "ArrowLeft":
+                data = "\x1b[D";
+                break;
+              case "Home":
+                data = "\x1b[H";
+                break;
+              case "End":
+                data = "\x1b[F";
+                break;
+              case "Delete":
+                data = "\x1b[3~";
+                break;
+            }
+          }
+
+          if (data) {
+            this.send({ type: "input", data });
+            this._forceRender = true;
+          }
+        },
+
+        // Reads xterm's buffer directly and renders text to the mirror canvas.
+        // This bypasses xterm's canvas/DOM rendering entirely, so it works
+        // in WebXR immersive mode where the browser stops painting DOM canvases.
+        renderTerminalBuffer() {
+          const buffer = this.term.buffer.active;
+          const cols = this.term.cols;
+          const rows = this.term.rows;
+          const ctx = this.mirrorCtx;
+          const cw = this.mirrorCanvas.width;
+          const ch = this.mirrorCanvas.height;
+          const cellW = cw / cols;
+          const cellH = ch / rows;
+          const fontSize = Math.floor(Math.min(cellH * 0.78, cellW * 1.6));
+          const pal = this._palette;
+          const defaultFg = "#00ffaa";
+          const defaultBg = "#0a0f14";
+
+          function toColor(mode, val, def) {
+            if (mode === 0) return def;
+            if ((mode === 1 || mode === 2) && val < 16) return pal[val] || def;
+            if (mode === 2 && val < 232) {
+              const i = val - 16;
+              return `rgb(${Math.floor(i/36)*51},${Math.floor((i%36)/6)*51},${(i%6)*51})`;
+            }
+            if (mode === 2) {
+              const v = (val - 232) * 10 + 8;
+              return `rgb(${v},${v},${v})`;
+            }
+            if (mode === 3) {
+              return `rgb(${(val>>16)&0xff},${(val>>8)&0xff},${val&0xff})`;
+            }
+            return def;
+          }
+
+          // Clear
+          ctx.fillStyle = defaultBg;
+          ctx.fillRect(0, 0, cw, ch);
+
+          ctx.textBaseline = "top";
+          let curFont = "";
+          let curFill = "";
+
+          for (let y = 0; y < rows; y++) {
+            const lineIdx = buffer.viewportY + y;
+            if (lineIdx >= buffer.length) break;
+            const line = buffer.getLine(lineIdx);
+            if (!line) continue;
+
+            const py = y * cellH;
+
+            for (let x = 0; x < cols; x++) {
+              const cell = line.getCell(x);
+              if (!cell) continue;
+              if (cell.getWidth() === 0) continue;
+
+              const px = x * cellW;
+              const w = cell.getWidth() * cellW;
+              const inv = cell.isInverse();
+
+              let fg = toColor(cell.getFgColorMode(), cell.getFgColor(), defaultFg);
+              let bg = toColor(cell.getBgColorMode(), cell.getBgColor(), null);
+
+              if (inv) {
+                const tmp = fg;
+                fg = bg || defaultBg;
+                bg = tmp;
+              }
+
+              // Draw background if non-default
+              if (bg && bg !== defaultBg) {
+                ctx.fillStyle = bg;
+                ctx.fillRect(px, py, w, cellH);
+              }
+
+              const ch_ = cell.getChars();
+              if (!ch_ || ch_ === " ") continue;
+
+              const bold = cell.isBold();
+              const font = `${bold ? "bold " : ""}${fontSize}px monospace`;
+              if (font !== curFont) { ctx.font = font; curFont = font; }
+              if (fg !== curFill) { ctx.fillStyle = fg; curFill = fg; }
+
+              ctx.fillText(ch_, px + 1, py + (cellH - fontSize) / 2);
+            }
+          }
+
+          // Blinking block cursor
+          const cx = buffer.cursorX;
+          const cy = buffer.cursorY;
+          if (Math.floor(performance.now() / 530) % 2) {
+            ctx.fillStyle = defaultFg;
+            ctx.globalAlpha = 0.7;
+            ctx.fillRect(cx * cellW, cy * cellH, cellW, cellH);
+            ctx.globalAlpha = 1.0;
+          }
+
+          this.texture.needsUpdate = true;
+        },
+      });
+
+      // Wait for scene, then attach vr-terminal to the TTY-01 plane
+      console.log("[module] xterm imports loaded, registering vr-terminal component");
+      const scene = document.querySelector("a-scene");
+      const initTerminal = () => {
+        const plane = document.getElementById("vr-term-plane");
+        if (plane) {
+          console.log("[module] attaching vr-terminal to plane");
+          plane.setAttribute("vr-terminal", "cols:80; rows:24; wsPath:/pty");
+        } else {
+          console.error("[module] vr-term-plane not found!");
+        }
+      };
+      if (scene.hasLoaded) initTerminal();
+      else scene.addEventListener("loaded", initTerminal);
+    </script>
+  </body>
+</html>
