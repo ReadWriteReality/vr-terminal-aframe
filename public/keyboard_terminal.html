@@ -132,6 +132,16 @@
           this._h2cLoading = false;
           this.loadContent();
         },
+        update(oldData) {
+          if (!this.ctx) return;
+          if (oldData.mode !== this.data.mode ||
+              oldData.url !== this.data.url ||
+              oldData.html !== this.data.html ||
+              oldData.render !== this.data.render) {
+            this._browserCanvas = null;
+            this.loadContent();
+          }
+        },
         async loadContent() {
           const mode = this.data.mode;
           let html = "";
@@ -177,25 +187,30 @@
     `);
           doc.close();
           this.content = "loaded";
-          // If browser render mode, snapshot with html2canvas after load
+          // If browser render mode, wait for iframe to paint, then snapshot
           if (this.data.render === "browser") {
-            this._loadHtml2Canvas().then(() => this._snapshot());
+            setTimeout(() => {
+              this._loadHtml2Canvas().then(() => this._snapshot());
+            }, 500);
           }
         },
-        async _loadHtml2Canvas() {
-          if (this._h2cLoaded || this._h2cLoading) return;
-          if (window.html2canvas) { this._h2cLoaded = true; return; }
-          this._h2cLoading = true;
-          return new Promise((resolve) => {
+        _loadHtml2Canvas() {
+          if (window.html2canvas) { this._h2cLoaded = true; return Promise.resolve(); }
+          if (this._h2cPromise) return this._h2cPromise;
+          this._h2cPromise = new Promise((resolve) => {
             const s = document.createElement("script");
             s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
-            s.onload = () => { this._h2cLoaded = true; this._h2cLoading = false; resolve(); };
-            s.onerror = () => { this._h2cLoading = false; resolve(); };
+            s.onload = () => { this._h2cLoaded = true; resolve(); };
+            s.onerror = () => { console.warn("[html-display] html2canvas CDN failed"); resolve(); };
             document.head.appendChild(s);
           });
+          return this._h2cPromise;
         },
         async _snapshot() {
-          if (!this._h2cLoaded || !window.html2canvas || !this.iframe) return;
+          if (!window.html2canvas || !this.iframe) {
+            console.warn("[html-display] snapshot skipped: h2c=", !!window.html2canvas, "iframe=", !!this.iframe);
+            return;
+          }
           try {
             const body = this.iframe.contentDocument.body;
             this._browserCanvas = await window.html2canvas(body, {
@@ -203,7 +218,7 @@
               backgroundColor: "#0a0a14",
               useCORS: true, logging: false,
             });
-            console.log("[html-display] browser snapshot rendered");
+            console.log("[html-display] browser snapshot rendered", this._browserCanvas.width, "x", this._browserCanvas.height);
           } catch (e) {
             console.warn("[html-display] html2canvas error:", e.message);
           }
