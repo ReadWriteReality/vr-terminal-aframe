@@ -1,0 +1,13 @@
+{
+  "name": "holo-radar",
+  "description": "Holographic radar scanner on desk",
+  "version": "1.0.0",
+  "args": {},
+  "commands": [
+    {
+      "type": "eval",
+      "tag": "holo-radar",
+      "code": "var old=document.querySelector(\"[holo-radar]\");if(old)old.parentNode.removeChild(old);var el=document.createElement(\"a-entity\");el.setAttribute(\"holo-radar\",\"\");el.setAttribute(\"position\",\"-0.72 1.2 -0.5\");el.setAttribute(\"rotation\",\"90 25 0\");document.querySelector(\"a-scene\").appendChild(el);console.log(\"[hot-swap] holo-radar nudged back toward screen\");"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "clock",
+  "description": "Live UTC clock on WEB-01",
+  "version": "1.0.0",
+  "args": {},
+  "commands": [
+    {
+      "type": "eval",
+      "tag": "job-clock",
+      "code": "var el=document.querySelector('[html-display]');var comp=el.components['html-display'];comp.data.render='text';comp.data.mode='raw';if(comp._clockInterval)clearInterval(comp._clockInterval);comp._clockInterval=setInterval(function(){var now=new Date();var utc=now.toISOString().replace('T',' ').split('.')[0]+' UTC';var html='<div style=\"text-align:center;padding:40px\"><h1 style=\"color:#00ffcc;font-size:32px;margin:0\">'+utc+'</h1><p style=\"color:#00ffaa80;font-size:14px;margin:10px 0\">MISSION ELAPSED: '+Math.floor((now-new Date('2025-01-01'))/86400000)+' DAYS</p><p style=\"color:#00ddff;font-size:12px\">ORBITAL PERIOD: 92.4 MIN</p></div>';comp.data.html=html;comp.renderHTML(html);},1000);console.log('[job:clock] started');"
+    }
+  ],
+  "cleanup": [
+    {
+      "type": "eval",
+      "tag": "job-clock-cleanup",
+      "code": "var comp=document.querySelector('[html-display]').components['html-display'];if(comp._clockInterval){clearInterval(comp._clockInterval);comp._clockInterval=null;console.log('[job:clock] stopped');}"
+    }
+  ]
+}

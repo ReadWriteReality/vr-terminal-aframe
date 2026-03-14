@@ -261,6 +261,142 @@ app.post('/pty/input', express.json(), (req, res) => {
   res.json({ ok: true });
 });
 
+// ── Job system ──────────────────────────────────────────────────────
+// Jobs are portable hot-swap recipes stored as JSON in jobs/
+const jobsDir = path.join(projectRoot, 'jobs');
+const installedJobs = new Set();
+
+// List available jobs
+app.get('/jobs', (_req, res) => {
+  try {
+    const files = fs.readdirSync(jobsDir).filter(f => f.endsWith('.json'));
+    const jobs = files.map(f => {
+      const job = JSON.parse(fs.readFileSync(path.join(jobsDir, f), 'utf8'));
+      return { file: f, name: job.name, description: job.description, version: job.version, installed: installedJobs.has(job.name), args: job.args || {} };
+    });
+    res.json(jobs);
+  } catch (e) {
+    res.json([]);
+  }
+});
+
+// Install a job (execute its commands via hot-swap)
+app.post('/jobs/:name/install', express.json(), (req, res) => {
+  const jobFile = path.join(jobsDir, req.params.name + '.json');
+  if (!fs.existsSync(jobFile)) return res.status(404).json({ error: 'job not found' });
+  const job = JSON.parse(fs.readFileSync(jobFile, 'utf8'));
+  const args = req.body || {};
+  let sent = 0;
+  for (const cmd of job.commands) {
+    const payload = { ...cmd };
+    // Template argument substitution
+    if (payload.code) {
+      payload.code = payload.code.replace(/\{\{(\w+)\}\}/g, (_m, key) => {
+        if (args[key] !== undefined) return args[key];
+        if (job.args && job.args[key] && job.args[key].default !== undefined) return job.args[key].default;
+        return '';
+      });
+    }
+    sent += broadcastHotSwap(payload);
+    // Persist
+    if (payload.tag) {
+      const idx = hotSwapState.findIndex(e => e.tag === payload.tag);
+      if (idx >= 0) hotSwapState[idx] = payload;
+      else hotSwapState.push(payload);
+    } else {
+      hotSwapState.push(payload);
+    }
+  }
+  saveHotSwapState(hotSwapState);
+  installedJobs.add(job.name);
+  console.log(`[jobs] installed "${job.name}" (${job.commands.length} commands, ${sent} clients)`);
+  res.json({ ok: true, job: job.name, clients: sent });
+});
+
+// Uninstall a job (run cleanup commands if any)
+app.post('/jobs/:name/uninstall', (_req, res) => {
+  const jobFile = path.join(jobsDir, _req.params.name + '.json');
+  if (!fs.existsSync(jobFile)) return res.status(404).json({ error: 'job not found' });
+  const job = JSON.parse(fs.readFileSync(jobFile, 'utf8'));
+  if (job.cleanup) {
+    for (const cmd of job.cleanup) broadcastHotSwap(cmd);
+  }
+  // Remove job's tags from persisted state
+  for (const cmd of job.commands) {
+    if (cmd.tag) {
+      const idx = hotSwapState.findIndex(e => e.tag === cmd.tag);
+      if (idx >= 0) hotSwapState.splice(idx, 1);
+    }
+  }
+  saveHotSwapState(hotSwapState);
+  installedJobs.delete(job.name);
+  console.log(`[jobs] uninstalled "${job.name}"`);
+  res.json({ ok: true, job: job.name, uninstalled: true });
+});
+
+// ── Workspace save/load ─────────────────────────────────────────────
+const workspacesDir = path.join(projectRoot, 'workspaces');
+if (!fs.existsSync(workspacesDir)) fs.mkdirSync(workspacesDir, { recursive: true });
+
+// Save current hot-swap state + installed jobs as a workspace
+app.post('/workspace/save', express.json(), (req, res) => {
+  const name = req.body.name || `workspace-${Date.now()}`;
+  const workspace = {
+    name,
+    savedAt: new Date().toISOString(),
+    installedJobs: [...installedJobs],
+    hotSwapState: [...hotSwapState],
+  };
+  const file = path.join(workspacesDir, name + '.json');
+  fs.writeFileSync(file, JSON.stringify(workspace, null, 2));
+  console.log(`[workspace] saved "${name}" (${hotSwapState.length} entries, ${installedJobs.size} jobs)`);
+  res.json({ ok: true, name, entries: hotSwapState.length, jobs: installedJobs.size });
+});
+
+// Load a workspace (replay its hot-swap state)
+app.post('/workspace/load', express.json(), (req, res) => {
+  const name = req.body.name;
+  if (!name) return res.status(400).json({ error: 'missing name' });
+  const file = path.join(workspacesDir, name + '.json');
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'workspace not found' });
+  const workspace = JSON.parse(fs.readFileSync(file, 'utf8'));
+  // Clear current state and replay workspace
+  hotSwapState.length = 0;
+  hotSwapState.push(...workspace.hotSwapState);
+  saveHotSwapState(hotSwapState);
+  installedJobs.clear();
+  workspace.installedJobs.forEach(j => installedJobs.add(j));
+  // Broadcast all entries to connected clients
+  let sent = 0;
+  for (const entry of hotSwapState) {
+    sent += broadcastHotSwap(entry);
+  }
+  console.log(`[workspace] loaded "${name}" (${hotSwapState.length} entries → ${sent} clients)`);
+  res.json({ ok: true, name, entries: hotSwapState.length, clients: sent });
+});
+
+// List saved workspaces
+app.get('/workspace/list', (_req, res) => {
+  try {
+    const files = fs.readdirSync(workspacesDir).filter(f => f.endsWith('.json'));
+    const list = files.map(f => {
+      const ws = JSON.parse(fs.readFileSync(path.join(workspacesDir, f), 'utf8'));
+      return { name: ws.name, savedAt: ws.savedAt, entries: ws.hotSwapState.length, jobs: ws.installedJobs.length };
+    });
+    res.json(list);
+  } catch {
+    res.json([]);
+  }
+});
+
+// Delete a workspace
+app.delete('/workspace/:name', (req, res) => {
+  const file = path.join(workspacesDir, req.params.name + '.json');
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'not found' });
+  fs.unlinkSync(file);
+  res.json({ ok: true, deleted: req.params.name });
+});
+
 // ── Hot-swap channel (SSE) with persistence ─────────────────────────
 // SSE side-channel for injecting code/entities into VR without page reload.
 // Uses SSE instead of WebSocket because visionOS Safari blocks WSS to self-signed certs.

@@ -1,0 +1,13 @@
+{
+  "name": "station-lighting",
+  "description": "Utilitarian corridor and room lighting",
+  "version": "1.0.0",
+  "args": {},
+  "commands": [
+    {
+      "type": "eval",
+      "tag": "station-lighting",
+      "code": "var old=document.querySelector(\"[station-lighting]\");if(old)old.parentNode.removeChild(old);AFRAME.registerComponent(\"station-lighting\",{init(){const g=this.el.object3D;function pt(color,int,dist,x,y,z){var lt=new THREE.PointLight(color,int,dist);lt.position.set(x,y,z);g.add(lt);}function strip(w,h,d,x,y,z){var m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),new THREE.MeshBasicMaterial({color:0xddeeff,transparent:true,opacity:0.08}));m.position.set(x,y,z);g.add(m);}/* Main corridor - sparse overhead fluorescents */pt(0xddeeff,0.35,4,0,2.65,-3.0);pt(0xddeeff,0.35,4,0,2.65,-5.5);/* Subtle ceiling strip indicators */strip(0.6,0.006,0.02,0,2.73,-3.0);strip(0.6,0.006,0.02,0,2.73,-5.5);/* T-junction - single overhead */pt(0xddeeff,0.4,3.5,0,2.65,-4.5);/* Right branch - one light */pt(0xccddff,0.3,3.5,2.3,2.65,-4.5);/* Server room - dim blue overhead */pt(0x8899bb,0.5,3.5,4.8,2.5,-4.5);/* Observation room - single cool white */pt(0xccddee,0.5,4,0,2.5,-8.5);/* Viewport window - faint starlight glow */var viewport=new THREE.Mesh(new THREE.PlaneGeometry(1.6,1.0),new THREE.MeshBasicMaterial({color:0x0a1525,transparent:true,opacity:0.8}));viewport.position.set(0,1.5,-9.71);g.add(viewport);pt(0x334466,0.15,2,0,1.5,-9.4);}});var el=document.createElement(\"a-entity\");el.setAttribute(\"station-lighting\",\"\");document.querySelector(\"a-scene\").appendChild(el);console.log(\"[hot-swap] station-lighting v2 - toned down\");"
+    }
+  ]
+}

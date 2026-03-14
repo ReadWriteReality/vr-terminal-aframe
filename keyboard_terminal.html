@@ -1,0 +1,1104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Orbital Security Station - Physical Keyboard</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #000;
+        color: #00ffaa;
+        font-family: "Courier New", monospace;
+      }
+      body {
+        display: flex;
+      }
+      #hud-wrapper {
+        flex: 1;
+        display: flex;
+      }
+      a-scene {
+        flex: 1;
+      }
+    </style>
+    <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+    <script>
+      // ═══════════════════════════════════════════════════════════════════
+      // TERMINAL SYSTEM
+      // ═══════════════════════════════════════════════════════════════════
+      const terminal = {
+        lines: [],
+        maxLines: 18,
+        input: "",
+        cursor: 0,
+        print(msg) {
+          this.lines.push(msg);
+          if (this.lines.length > this.maxLines) this.lines.shift();
+        },
+        success(msg) {
+          this.print("&g" + msg + "&0");
+        },
+        error(msg) {
+          this.print("&r" + msg + "&0");
+        },
+        info(msg) {
+          this.print("&c" + msg + "&0");
+        },
+        type(char) {
+          this.input += char;
+          this.cursor++;
+        },
+        backspace() {
+          if (this.input.length > 0) {
+            this.input = this.input.slice(0, -1);
+            this.cursor--;
+          }
+        },
+        submit() {
+          const cmd = this.input.trim();
+          this.print("&b>&0 " + cmd);
+          this.input = "";
+          this.cursor = 0;
+          if (cmd) this.execute(cmd);
+        },
+        execute(cmd) {
+          const [name, ...args] = cmd.split(" ");
+          if (name === "clear") this.lines = [];
+          else if (name === "help")
+            this.print("&gCommands:&0 status, ping, clear");
+          else if (name === "status") {
+            this.print("&c=== STATUS ===&0");
+            this.print(`&gCPU:&0 ${(Math.random() * 30 + 10).toFixed(1)}%`);
+          } else if (name === "ping") {
+            this.print(`&bPING&0 ${args[0] || "localhost"}`);
+            this.success("OK");
+          } else this.error(`Unknown: ${name}`);
+        },
+        boot() {
+          this.print("&c╔═══════════════════════════╗&0");
+          this.print("&c║  ORBITAL SECURITY TERM    ║&0");
+          this.print("&c╚═══════════════════════════╝&0");
+          this.print("&gSystem ready.&0 Type &yhelp&0");
+        },
+      };
+      window.terminal = terminal;
+
+      function drawTerminal(canvas, ctx) {
+        const w = canvas.width,
+          h = canvas.height;
+        ctx.fillStyle = "#0a0f14";
+        ctx.fillRect(0, 0, w, h);
+        ctx.strokeStyle = "#00ffaa22";
+        for (let y = 0; y < h; y += 3) {
+          ctx.beginPath();
+          ctx.moveTo(0, y);
+          ctx.lineTo(w, y);
+          ctx.stroke();
+        }
+        const colors = {
+          r: "#ff4444",
+          g: "#44ff44",
+          b: "#4488ff",
+          y: "#ffff44",
+          c: "#44ffff",
+          0: "#00ffaa",
+        };
+        ctx.font = "14px monospace";
+        let y = 24;
+        terminal.lines.forEach((line) => {
+          let x = 12,
+            color = "#00ffaa";
+          for (let i = 0; i < line.length; i++) {
+            if (line[i] === "&" && colors[line[i + 1]]) {
+              color = colors[line[i + 1]];
+              i++;
+              continue;
+            }
+            ctx.fillStyle = color;
+            ctx.fillText(line[i], x, y);
+            x += 8.5;
+          }
+          y += 18;
+        });
+        ctx.fillStyle = "#00ffaa";
+        ctx.fillText(
+          "> " + terminal.input + (Math.floor(Date.now() / 500) % 2 ? "█" : ""),
+          12,
+          h - 20,
+        );
+      }
+
+      // ═══════════════════════════════════════════════════════════════════
+      // HTML DISPLAY SYSTEM - Local files, raw HTML, or proxied URLs
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("html-display", {
+        schema: {
+          canvas: { type: "selector" },
+          // Mode: 'raw' (inline HTML), 'local' (same-origin URL), 'proxy' (via CORS proxy)
+          mode: { type: "string", default: "raw" },
+          // For mode='raw': put HTML here
+          html: {
+            type: "string",
+            default:
+              "<html><body><h1>Hello World</h1><p>This is raw HTML!</p></body></html>",
+          },
+          // For mode='local' or 'proxy': the URL
+          url: { type: "string", default: "" },
+          // For mode='proxy': your proxy endpoint (e.g., http://localhost:3000/proxy?url=)
+          proxyBase: {
+            type: "string",
+            default: "http://localhost:3000/proxy?url=",
+          },
+          interval: { default: 100 },
+        },
+        init() {
+          this.canvas = this.data.canvas;
+          if (!this.canvas) return;
+          this.canvas.width = 512;
+          this.canvas.height = 512;
+          this.ctx = this.canvas.getContext("2d");
+          this.nextDraw = 0;
+          this.content = null;
+          this.iframe = null;
+          this.loadContent();
+        },
+        async loadContent() {
+          const mode = this.data.mode;
+          let html = "";
+
+          if (mode === "raw") {
+            html = this.data.html;
+          } else if (mode === "local") {
+            // Local same-origin fetch (no CORS issues)
+            try {
+              const resp = await fetch(this.data.url);
+              html = await resp.text();
+            } catch (e) {
+              html = `<p style="color:red">Error loading: ${e.message}</p>`;
+            }
+          } else if (mode === "proxy") {
+            // Fetch via your CORS proxy
+            try {
+              const proxyUrl =
+                this.data.proxyBase + encodeURIComponent(this.data.url);
+              const resp = await fetch(proxyUrl);
+              html = await resp.text();
+            } catch (e) {
+              html = `<p style="color:red">Proxy error: ${e.message}</p>`;
+            }
+          }
+
+          // Render HTML to canvas via offscreen iframe
+          this.renderHTML(html);
+        },
+        renderHTML(html) {
+          // Create hidden iframe to render HTML
+          if (this.iframe) document.body.removeChild(this.iframe);
+          this.iframe = document.createElement("iframe");
+          this.iframe.style.cssText =
+            "position:absolute;left:-9999px;width:512px;height:512px;border:none;";
+          document.body.appendChild(this.iframe);
+
+          // Write content with base styles
+          const doc = this.iframe.contentDocument;
+          doc.open();
+          doc.write(`
+      <html><head><style>
+        body { background:#0a0a14; color:#00ffaa; font-family:monospace; font-size:14px; padding:12px; margin:0; }
+        h1,h2,h3 { color:#00ddff; margin:8px 0; }
+        a { color:#ff44aa; }
+        p { margin:6px 0; }
+      </style></head><body>${html}</body></html>
+    `);
+          doc.close();
+
+          this.content = "loaded";
+        },
+        tick(time) {
+          if (!this.ctx || !this.iframe || time < this.nextDraw) return;
+          const w = 512,
+            h = 512,
+            ctx = this.ctx;
+
+          // Draw iframe content to canvas
+          try {
+            ctx.fillStyle = "#0a0a14";
+            ctx.fillRect(0, 0, w, h);
+            ctx.drawImage(this.iframe.contentWindow.document.body, 0, 0);
+          } catch (e) {
+            // Fallback: manually render text content
+            ctx.fillStyle = "#0a0a14";
+            ctx.fillRect(0, 0, w, h);
+            const text =
+              this.iframe.contentDocument?.body?.innerText || "Loading...";
+            ctx.fillStyle = "#00ffaa";
+            ctx.font = "13px monospace";
+            const lines = text.split("\n");
+            lines
+              .slice(0, 30)
+              .forEach((line, i) =>
+                ctx.fillText(line.slice(0, 55), 12, 24 + i * 16),
+              );
+          }
+
+          // Scanlines
+          ctx.strokeStyle = "#00ffaa08";
+          for (let y = 0; y < h; y += 3) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+          }
+
+          // Header
+          ctx.fillStyle = "#001520";
+          ctx.fillRect(0, 0, w, 28);
+          ctx.font = "bold 11px monospace";
+          ctx.fillStyle = "#00aaff";
+          ctx.fillText(
+            `HTML DISPLAY // ${this.data.mode.toUpperCase()}`,
+            10,
+            18,
+          );
+
+          this.nextDraw = time + this.data.interval;
+        },
+        remove() {
+          if (this.iframe) document.body.removeChild(this.iframe);
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // KEYBOARD SYSTEM (WITH AUDIO)
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerSystem("virtual-keyboard", {
+        init() {
+          this.keyboardEl = null;
+          this.isRaised = true;
+          this.shiftActive = false;
+          this.capsLock = false;
+          this.keys = [];
+
+          // Audio Context for mechanical clicks
+          this.audioCtx = new (
+            window.AudioContext || window.webkitAudioContext
+          )();
+        },
+
+        playClick() {
+          // Resume context if browser suspended it (requires user interaction first usually)
+          if (this.audioCtx.state === "suspended") {
+            this.audioCtx.resume();
+          }
+
+          const t = this.audioCtx.currentTime;
+
+          // Oscillator 1: The "Click" (High pitch transient)
+          const osc = this.audioCtx.createOscillator();
+          const gain = this.audioCtx.createGain();
+          osc.type = "triangle";
+          osc.frequency.setValueAtTime(800, t);
+          osc.frequency.exponentialRampToValueAtTime(300, t + 0.05);
+
+          gain.gain.setValueAtTime(0.2, t);
+          gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05);
+
+          osc.connect(gain);
+          gain.connect(this.audioCtx.destination);
+          osc.start(t);
+          osc.stop(t + 0.05);
+
+          // Oscillator 2: The "Thump" (Plastic resonance)
+          const osc2 = this.audioCtx.createOscillator();
+          const gain2 = this.audioCtx.createGain();
+          osc2.type = "sine";
+          osc2.frequency.setValueAtTime(200, t);
+          osc2.frequency.exponentialRampToValueAtTime(50, t + 0.1);
+
+          gain2.gain.setValueAtTime(0.4, t);
+          gain2.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+
+          osc2.connect(gain2);
+          gain2.connect(this.audioCtx.destination);
+          osc2.start(t);
+          osc2.stop(t + 0.1);
+        },
+
+        registerKey(el) {
+          this.keys.push(el);
+        },
+        sendKey(key) {
+          if (!window.terminal) return;
+          if (key === "ENT") terminal.submit();
+          else if (key === "BK") terminal.backspace();
+          else if (key === "SPC") terminal.type(" ");
+          else if (key === "TAB") terminal.type("  ");
+          else if (key === "SH") {
+            this.shiftActive = !this.shiftActive;
+            this.updateLabels();
+          } else if (key === "CAP") {
+            this.capsLock = !this.capsLock;
+            this.updateLabels();
+          } else if (key === "CT" || key === "AL") {
+          } else if (key.length === 1) {
+            let c = key.toLowerCase(); // Default to lowercase
+            if (this.shiftActive || this.capsLock) {
+              c = this.shifted(key); // Uppercase/shifted
+              if (this.shiftActive) {
+                this.shiftActive = false;
+                this.updateLabels();
+              }
+            }
+            terminal.type(c);
+          }
+        },
+        shifted(k) {
+          const m = {
+            1: "!",
+            2: "@",
+            3: "#",
+            4: "$",
+            5: "%",
+            6: "^",
+            7: "&",
+            8: "*",
+            9: "(",
+            0: ")",
+            "-": "_",
+            "=": "+",
+            "[": "{",
+            "]": "}",
+            "\\": "|",
+            ";": ":",
+            "'": '"',
+            ",": "<",
+            ".": ">",
+            "/": "?",
+            "`": "~",
+          };
+          return m[k] || (k >= "a" && k <= "z" ? k.toUpperCase() : k);
+        },
+        updateLabels() {
+          this.keys.forEach((k) => {
+            const c = k.components["mechanical-key"];
+            if (c && c.data.key.length === 1) {
+              const sh = this.shiftActive || this.capsLock;
+              c.setLabel(
+                sh ? this.shifted(c.data.key) : c.data.key.toLowerCase(),
+              );
+            }
+          });
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // HAND TRACKING - DELIBERATE INPUT MODEL
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("hand-typer", {
+        schema: { hand: { type: "string", default: "right" } },
+        init() {
+          this.tips = [];
+          this.orbs = [];
+          this.ready = false;
+          this.tempVec = new THREE.Vector3();
+          this.keyVec = new THREE.Vector3();
+          this.kbSystem = this.el.sceneEl.systems["virtual-keyboard"];
+
+          // === INPUT PARAMETERS (tuned for comfort) ===
+          this.DWELL_MS = 70; // Must hover 70ms before key fires
+          this.LOCK_EXIT_DIST = 0.032; // Must move 3.2cm from locked key to unlock
+          this.COOLDOWN_MS = 180; // Global cooldown between keypresses
+          this.PRESS_DEPTH = -0.005; // Finger must be this deep INTO key
+          this.MAX_VELOCITY = 0.18; // Ignore fingers moving faster than this (m/frame)
+
+          // Per-finger state
+          this.fingers = {};
+
+          this.el.addEventListener("model-loaded", () =>
+            setTimeout(() => this.setup(), 600),
+          );
+        },
+
+        setup() {
+          const mesh = this.el.getObject3D("mesh");
+          if (!mesh) return;
+          const names = [
+            "index-finger-tip",
+            "middle-finger-tip",
+            "ring-finger-tip",
+            "thumb-tip",
+          ];
+          names.forEach((name, i) => {
+            mesh.traverse((node) => {
+              if (
+                (node.name.includes(name) || node.name.endsWith(name)) &&
+                !this.tips[i]
+              ) {
+                this.tips[i] = node;
+                const orb = new THREE.Mesh(
+                  new THREE.SphereGeometry(0.01),
+                  new THREE.MeshBasicMaterial({
+                    color: 0x00ffaa,
+                    transparent: true,
+                    opacity: 0.6,
+                  }),
+                );
+                node.add(orb);
+                this.orbs[i] = orb;
+
+                // Initialize finger state
+                const fid = `${this.data.hand}-${i}`;
+                this.fingers[fid] = {
+                  lockedKey: null,
+                  lockedKeyPos: new THREE.Vector3(),
+                  dwellKey: null,
+                  dwellStart: 0,
+                  lastPressTime: 0,
+                  prevPos: new THREE.Vector3(),
+                  velocity: 0,
+                };
+              }
+            });
+          });
+          this.ready = true;
+        },
+
+        tick() {
+          if (!this.ready || !this.kbSystem.isRaised) return;
+          const keys = this.kbSystem.keys;
+          if (keys.length === 0) return;
+          const now = performance.now();
+
+          this.tips.forEach((tip, i) => {
+            if (!tip) return;
+            const fid = `${this.data.hand}-${i}`;
+            const state = this.fingers[fid];
+            if (!state) return;
+
+            tip.getWorldPosition(this.tempVec);
+
+            // Calculate velocity (distance moved since last frame)
+            state.velocity = this.tempVec.distanceTo(state.prevPos);
+            state.prevPos.copy(this.tempVec);
+
+            // === VELOCITY GATE: Ignore fast-moving fingers ===
+            if (state.velocity > this.MAX_VELOCITY) {
+              this.setOrbState(i, "fast");
+              return;
+            }
+
+            // === CHECK LOCK STATE ===
+            if (state.lockedKey) {
+              const distFromLock = this.tempVec.distanceTo(state.lockedKeyPos);
+              if (distFromLock < this.LOCK_EXIT_DIST) {
+                // Still locked - show locked state, ignore everything
+                this.setOrbState(i, "locked");
+                return;
+              } else {
+                // Unlocked! Clear state
+                state.lockedKey.components["mechanical-key"]?.release();
+                state.lockedKey = null;
+                state.dwellKey = null;
+                state.dwellStart = 0;
+              }
+            }
+
+            // === FIND CANDIDATE KEY ===
+            let candidate = null;
+            let bestDist = Infinity;
+
+            for (let key of keys) {
+              const comp = key.components["mechanical-key"];
+              if (!comp) continue;
+
+              key.object3D.getWorldPosition(this.keyVec);
+
+              const hw = comp.data.width / 2 - 0.004; // Shrink hitbox
+              const hd = comp.data.depth / 2 - 0.004;
+              const keyTop = this.keyVec.y + comp.data.height;
+
+              const dx = Math.abs(this.tempVec.x - this.keyVec.x);
+              const dz = Math.abs(this.tempVec.z - this.keyVec.z);
+              const dy = this.tempVec.y - keyTop;
+
+              // Must be within XZ bounds AND pressed down INTO key
+              if (dx < hw && dz < hd && dy < this.PRESS_DEPTH && dy > -0.025) {
+                const dist = dx + dz;
+                if (dist < bestDist) {
+                  candidate = key;
+                  bestDist = dist;
+                }
+              }
+            }
+
+            // === DWELL LOGIC ===
+            if (candidate) {
+              if (candidate === state.dwellKey) {
+                // Same key - check if dwell time met
+                const dwellTime = now - state.dwellStart;
+                const cooldownOk = now - state.lastPressTime > this.COOLDOWN_MS;
+
+                if (dwellTime >= this.DWELL_MS && cooldownOk) {
+                  // === FIRE KEY ===
+                  candidate.components["mechanical-key"]?.press();
+                  state.lockedKey = candidate;
+                  candidate.object3D.getWorldPosition(state.lockedKeyPos);
+                  state.lastPressTime = now;
+                  state.dwellKey = null;
+                  this.setOrbState(i, "fired");
+                  this.kbSystem.sendKey(
+                    candidate.components["mechanical-key"].data.key,
+                  );
+                } else {
+                  // Still dwelling
+                  const progress = Math.min(dwellTime / this.DWELL_MS, 1);
+                  this.setOrbState(i, "dwell", progress);
+                }
+              } else {
+                // New candidate - start dwell timer
+                state.dwellKey = candidate;
+                state.dwellStart = now;
+                this.setOrbState(i, "hover");
+              }
+            } else {
+              // No candidate
+              state.dwellKey = null;
+              state.dwellStart = 0;
+              this.setOrbState(i, "idle");
+            }
+          });
+        },
+
+        setOrbState(i, mode, progress = 0) {
+          const orb = this.orbs[i];
+          if (!orb) return;
+
+          switch (mode) {
+            case "idle":
+              orb.material.color.setHex(0x00ffaa);
+              orb.material.opacity = 0.3;
+              orb.scale.setScalar(1);
+              break;
+            case "hover":
+              orb.material.color.setHex(0x00ffaa);
+              orb.material.opacity = 0.6;
+              orb.scale.setScalar(1.2);
+              break;
+            case "dwell":
+              orb.material.color.setHex(0xffff00);
+              orb.material.opacity = 0.5 + progress * 0.5;
+              orb.scale.setScalar(1.2 + progress * 0.8);
+              break;
+            case "fired":
+              orb.material.color.setHex(0x00ff00);
+              orb.material.opacity = 1;
+              orb.scale.setScalar(2.5);
+              break;
+            case "locked":
+              orb.material.color.setHex(0xff8800);
+              orb.material.opacity = 0.8;
+              orb.scale.setScalar(1.5);
+              break;
+            case "fast":
+              orb.material.color.setHex(0xff0000);
+              orb.material.opacity = 0.4;
+              orb.scale.setScalar(0.8);
+              break;
+          }
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // MECHANICAL KEY - Clean label handling
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("mechanical-key", {
+        schema: {
+          key: { type: "string" },
+          label: { type: "string", default: "" },
+          width: { default: 0.04 },
+          height: { default: 0.014 },
+          depth: { default: 0.038 },
+        },
+
+        init() {
+          this.system = this.el.sceneEl.systems["virtual-keyboard"];
+          this.system.registerKey(this.el);
+          this.pressed = false;
+          this.baseY = 0;
+          this.pressedY = -0.005;
+
+          // Key body
+          this.keyMesh = document.createElement("a-box");
+          this.keyMesh.setAttribute("width", this.data.width - 0.003);
+          this.keyMesh.setAttribute("height", this.data.height);
+          this.keyMesh.setAttribute("depth", this.data.depth - 0.003);
+          this.keyMesh.setAttribute("position", `0 ${this.data.height / 2} 0`);
+          this.keyMesh.setAttribute(
+            "material",
+            "color:#1a1f28; roughness:0.35; metalness:0.7",
+          );
+          this.el.appendChild(this.keyMesh);
+
+          // Label - use provided label or key
+          const displayLabel = this.data.label || this.data.key;
+          this.createLabel(displayLabel);
+        },
+
+        createLabel(text) {
+          // Skip empty labels (like spacebar)
+          if (!text || text.trim() === "") return;
+
+          this.labelEl = document.createElement("a-entity");
+          this.labelEl.setAttribute(
+            "position",
+            `0 ${this.data.height + 0.001} 0`,
+          );
+          this.labelEl.setAttribute("rotation", "-90 0 0");
+
+          // UNIFORM scale for ALL keys - same as single letters
+          const scale = 0.35;
+
+          this.labelEl.setAttribute("text", {
+            value: text,
+            align: "center",
+            baseline: "center",
+            color: "#00ffaa",
+            width: 0.5,
+            wrapCount: 40,
+          });
+          this.labelEl.setAttribute("scale", `${scale} ${scale} ${scale}`);
+
+          this.el.appendChild(this.labelEl);
+        },
+
+        setLabel(text) {
+          if (this.labelEl) {
+            this.labelEl.setAttribute("text", "value", text);
+          }
+        },
+
+        press() {
+          if (this.pressed) return;
+          this.pressed = true;
+
+          // Trigger Audio
+          if (this.system.playClick) this.system.playClick();
+
+          this.el.object3D.position.y = this.pressedY;
+          this.keyMesh.setAttribute("material", "emissive", "#00ffaa");
+          this.keyMesh.setAttribute("material", "emissiveIntensity", 0.6);
+        },
+
+        release() {
+          if (!this.pressed) return;
+          this.pressed = false;
+          this.el.object3D.position.y = this.baseY;
+          this.keyMesh.setAttribute("material", "emissive", "#000");
+          this.keyMesh.setAttribute("material", "emissiveIntensity", 0);
+        },
+      });
+
+      // ═══════════════════════════════════════════════════════════════════
+      // KEYBOARD LAYOUT
+      // ═══════════════════════════════════════════════════════════════════
+      AFRAME.registerComponent("virtual-keyboard", {
+        init() {
+          this.system = this.el.sceneEl.systems["virtual-keyboard"];
+          this.system.keyboardEl = this.el;
+          this.build();
+        },
+
+        build() {
+          // Key definitions: {k: keyCode, l: label, w: widthMultiplier}
+          const rows = [
+            [
+              { k: "`" },
+              { k: "1" },
+              { k: "2" },
+              { k: "3" },
+              { k: "4" },
+              { k: "5" },
+              { k: "6" },
+              { k: "7" },
+              { k: "8" },
+              { k: "9" },
+              { k: "0" },
+              { k: "-" },
+              { k: "=" },
+              { k: "BK", l: "Del", w: 1.5 },
+            ],
+            [
+              { k: "TAB", l: "Tab", w: 1.2 },
+              { k: "Q" },
+              { k: "W" },
+              { k: "E" },
+              { k: "R" },
+              { k: "T" },
+              { k: "Y" },
+              { k: "U" },
+              { k: "I" },
+              { k: "O" },
+              { k: "P" },
+              { k: "[" },
+              { k: "]" },
+              { k: "\\", w: 1.2 },
+            ],
+            [
+              { k: "CAP", l: "Cap", w: 1.4 },
+              { k: "A" },
+              { k: "S" },
+              { k: "D" },
+              { k: "F" },
+              { k: "G" },
+              { k: "H" },
+              { k: "J" },
+              { k: "K" },
+              { k: "L" },
+              { k: ";" },
+              { k: "'" },
+              { k: "ENT", l: "Ret", w: 1.8 },
+            ],
+            [
+              { k: "SH", l: "Shf", w: 1.8 },
+              { k: "Z" },
+              { k: "X" },
+              { k: "C" },
+              { k: "V" },
+              { k: "B" },
+              { k: "N" },
+              { k: "M" },
+              { k: "," },
+              { k: "." },
+              { k: "/" },
+              { k: "SH", l: "Shf", w: 1.8 },
+            ],
+            [
+              { k: "CT", l: "Ctl", w: 1.4 },
+              { k: "AL", l: "Alt", w: 1.2 },
+              { k: "SPC", l: " ", w: 6 },
+              { k: "AL", l: "Alt", w: 1.2 },
+              { k: "CT", l: "Ctl", w: 1.4 },
+            ],
+          ];
+
+          const keyW = 0.036;
+          const keyD = 0.036;
+          const gap = 0.004;
+          const rowCount = rows.length;
+          const totalDepth = rowCount * (keyD + gap);
+
+          // Calculate max row width for centering
+          let maxUnits = 0;
+          rows.forEach((row) => {
+            let units = 0;
+            row.forEach((k) => (units += k.w || 1));
+            if (units > maxUnits) maxUnits = units;
+          });
+          const totalWidth = maxUnits * (keyW + gap);
+
+          // Base plate
+          const base = document.createElement("a-box");
+          base.setAttribute("width", totalWidth + 0.02);
+          base.setAttribute("height", 0.01);
+          base.setAttribute("depth", totalDepth + 0.015);
+          base.setAttribute("position", "0 -0.005 0");
+          base.setAttribute(
+            "material",
+            "color:#0d1017; metalness:0.85; roughness:0.25",
+          );
+          this.el.appendChild(base);
+
+          // Glow trim
+          const glow = document.createElement("a-box");
+          glow.setAttribute("width", totalWidth + 0.025);
+          glow.setAttribute("height", 0.003);
+          glow.setAttribute("depth", totalDepth + 0.02);
+          glow.setAttribute("position", "0 0.001 0");
+          glow.setAttribute(
+            "material",
+            "color:#00ffaa; shader:flat; transparent:true; opacity:0.15",
+          );
+          this.el.appendChild(glow);
+
+          // Generate keys
+          const startZ = -totalDepth / 2 + keyD / 2 + 0.005;
+
+          rows.forEach((row, rIdx) => {
+            let rowUnits = 0;
+            row.forEach((k) => (rowUnits += k.w || 1));
+            const rowWidth = rowUnits * (keyW + gap) - gap;
+            let x = -rowWidth / 2;
+            const z = startZ + rIdx * (keyD + gap);
+
+            row.forEach((keyDef) => {
+              const wMult = keyDef.w || 1;
+              const actualW = keyW * wMult + gap * (wMult - 1);
+
+              const keyEl = document.createElement("a-entity");
+              keyEl.setAttribute("position", `${x + actualW / 2} 0.005 ${z}`);
+              keyEl.setAttribute("mechanical-key", {
+                key: keyDef.k,
+                label: keyDef.l !== undefined ? keyDef.l : keyDef.k,
+                width: actualW,
+                height: 0.012,
+                depth: keyD,
+              });
+              this.el.appendChild(keyEl);
+
+              x += actualW + gap;
+            });
+          });
+        },
+      });
+
+      // Terminal draw
+      AFRAME.registerComponent("terminal-draw", {
+        schema: { canvas: { type: "selector" } },
+        init() {
+          this.canvas = this.data.canvas;
+          if (!this.canvas) return;
+          this.canvas.width = 512;
+          this.canvas.height = 512;
+          this.ctx = this.canvas.getContext("2d");
+          this.nextDraw = 0;
+          setTimeout(() => terminal.boot(), 500);
+        },
+        tick(time) {
+          if (!this.ctx || time < this.nextDraw) return;
+          drawTerminal(this.canvas, this.ctx);
+          this.nextDraw = time + 40;
+        },
+      });
+
+      // CRT display
+      AFRAME.registerComponent("crt-display", {
+        schema: { canvas: { type: "selector" } },
+        init() {
+          if (!this.data.canvas) return;
+          const tex = new THREE.CanvasTexture(this.data.canvas);
+          tex.minFilter = THREE.LinearFilter;
+          this.el.getObject3D("mesh").material.map = tex;
+          this.tex = tex;
+        },
+        tick() {
+          if (this.tex) this.tex.needsUpdate = true;
+        },
+      });
+
+      // HUD draw
+      AFRAME.registerComponent("hud-draw", {
+        schema: {
+          canvas: { type: "selector" },
+          feed: { type: "string", default: "main" },
+        },
+        init() {
+          this.canvas = this.data.canvas;
+          if (!this.canvas) return;
+          this.canvas.width = 512;
+          this.canvas.height = 512;
+          this.ctx = this.canvas.getContext("2d");
+          this.nextDraw = 0;
+        },
+        tick(time) {
+          if (!this.ctx || time < this.nextDraw) return;
+          const w = 512,
+            h = 512,
+            ctx = this.ctx;
+          ctx.fillStyle = "#050a10";
+          ctx.fillRect(0, 0, w, h);
+          ctx.strokeStyle = "#00ffaa10";
+          for (let y = 0; y < h; y += 4) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+          }
+          ctx.fillStyle = "#001520";
+          ctx.fillRect(0, 0, w, 32);
+          ctx.font = "bold 12px monospace";
+          ctx.fillStyle = "#00ffaa";
+          ctx.fillText(
+            `${this.data.feed.toUpperCase()} // ${new Date().toISOString().slice(11, 19)}`,
+            10,
+            22,
+          );
+          const stats = [
+            "REACTOR: 94%",
+            "SHIELDS: 87%",
+            "LIFE SUP: 99%",
+            "COMMS: OK",
+          ];
+          ctx.font = "14px monospace";
+          stats.forEach((s, i) => {
+            ctx.fillStyle = "#00ffaa";
+            ctx.fillText(s, 20, 65 + i * 28);
+          });
+          this.nextDraw = time + 100;
+        },
+      });
+    </script>
+  </head>
+  <body>
+    <div id="hud-wrapper">
+      <a-scene embedded vr-mode-ui="enabled:true" background="color:#01040f">
+        <a-assets>
+          <canvas id="hud-canvas-center"></canvas>
+          <canvas id="hud-canvas-left"></canvas>
+          <canvas id="hud-canvas-right"></canvas>
+          <canvas id="hud-canvas-terminal"></canvas>
+          <canvas id="hud-canvas-url"></canvas>
+          <img
+            id="grid-tex"
+            src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAIklEQVQIW2NkQAKrVq36zwjjgzhhYWGMYAEYB8RmROaABADeOQ8CXl/xfgAAAABJRU5ErkJggg=="
+          />
+        </a-assets>
+
+        <a-entity id="rig">
+          <a-camera position="0 1.6 0" look-controls>
+            <a-cursor
+              color="#0ff"
+              raycaster="objects:.interactive"
+              opacity="0.7"
+            ></a-cursor>
+          </a-camera>
+          <a-entity
+            hand-tracking-controls="hand:left"
+            hand-typer="hand:left"
+          ></a-entity>
+          <a-entity
+            hand-tracking-controls="hand:right"
+            hand-typer="hand:right"
+          ></a-entity>
+        </a-entity>
+
+        <!-- Desk -->
+        <a-box
+          position="0 0.8 -0.8"
+          width="2.5"
+          height="0.05"
+          depth="1.2"
+          color="#1a1c21"
+          material="roughness:0.8;metalness:0.4"
+        ></a-box>
+
+        <!-- Keyboard -->
+        <a-entity
+          virtual-keyboard
+          position="0 0.86 -0.55"
+          rotation="-8 0 0"
+        ></a-entity>
+
+        <!-- Monitors -->
+        <a-entity position="0 1.2 -0.9">
+          <a-entity
+            position="0 0 0"
+            hud-draw="canvas:#hud-canvas-center; feed:MAIN"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-center"
+              material="shader:flat"
+            ></a-plane>
+          </a-entity>
+          <a-entity
+            position="-0.85 0 0.15"
+            rotation="0 25 0"
+            hud-draw="canvas:#hud-canvas-left; feed:SEC-A"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-left"
+              material="shader:flat"
+            ></a-plane>
+          </a-entity>
+          <a-entity
+            position="0.85 0 0.15"
+            rotation="0 -25 0"
+            hud-draw="canvas:#hud-canvas-right; feed:SEC-B"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-right"
+              material="shader:flat"
+            ></a-plane>
+          </a-entity>
+          <a-entity
+            position="0.85 0.6 0.1"
+            rotation="-8 -25 0"
+            terminal-draw="canvas:#hud-canvas-terminal"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-terminal"
+              material="shader:flat"
+              class="interactive"
+            ></a-plane>
+            <a-text
+              value="TTY-01"
+              position="-0.22 -0.22 0.22"
+              color="#00ffaa"
+              width="0.8"
+            ></a-text>
+          </a-entity>
+          <a-entity
+            position="-0.85 0.6 0.1"
+            rotation="-8 25 0"
+            html-display="canvas:#hud-canvas-url; mode:raw; html:<h1>STATION ALPHA</h1><p>Orbital altitude: 408km</p><p>Status: <span style='color:#00ff00'>NOMINAL</span></p><h2>Crew</h2><p>Commander: Chen</p><p>Pilot: Kowalski</p><p>Specialist: Okonkwo</p><h2>Systems</h2><p>Reactor: 98%</p><p>O2 Gen: 100%</p><p>Water Reclaim: 94%</p>"
+          >
+            <a-box width="0.65" height="0.55" depth="0.4" color="#222"></a-box>
+            <a-plane
+              position="0 0 0.21"
+              width="0.5"
+              height="0.4"
+              crt-display="canvas:#hud-canvas-url"
+              material="shader:flat"
+            ></a-plane>
+            <a-text
+              value="WEB-01"
+              position="-0.22 -0.22 0.22"
+              color="#00aaff"
+              width="0.8"
+            ></a-text>
+          </a-entity>
+        </a-entity>
+
+        <a-plane
+          rotation="-90 0 0"
+          width="40"
+          height="40"
+          material="src:#grid-tex;repeat:100 100;transparent:true;opacity:0.3;color:#004433"
+        ></a-plane>
+        <a-light type="ambient" color="#ccffff" intensity="0.15"></a-light>
+        <a-light
+          type="point"
+          position="0 1.2 -0.8"
+          color="#00ffaa"
+          intensity="0.6"
+          distance="3"
+        ></a-light>
+        <a-light
+          type="point"
+          position="-1 2 0"
+          color="#0088ff"
+          intensity="0.3"
+          distance="5"
+        ></a-light>
+      </a-scene>
+    </div>
+  </body>
+</html>

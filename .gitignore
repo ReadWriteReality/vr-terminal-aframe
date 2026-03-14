@@ -6,3 +6,4 @@ certs/
 /tmp/
 *.log
 hot-swap-state.json
+workspaces/

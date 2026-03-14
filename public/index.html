@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>VR Terminal — A-Frame + xterm.js</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="https://aframe.io/releases/1.7.0/aframe.min.js"></script>
+  </head>
+  <body>
+    <div id="hud">
+      <strong>VR terminal</strong>
+      <span>Click the terminal to focus. Desktop keyboard works immediately after focus.</span>
+      <span>In-headset, use the soft keys for Tab / Esc / arrows / Ctrl+C / Ctrl+L.</span>
+    </div>
+
+    <!-- Hidden DOM terminal host. xterm.js renders here, then we mirror its canvases onto a VR plane. -->
+    <div id="xterm-host" aria-hidden="true">
+      <div id="xterm-root"></div>
+    </div>
+
+    <a-scene
+      renderer="colorManagement: true; antialias: true"
+      background="color: #05070b"
+      vr-mode-ui="enabled: true"
+    >
+      <a-assets></a-assets>
+
+      <a-entity light="type: ambient; intensity: 0.55"></a-entity>
+      <a-entity position="0 4 2" light="type: directional; intensity: 0.65; castShadow: false"></a-entity>
+      <a-sky color="#0b1020"></a-sky>
+      <a-plane rotation="-90 0 0" width="30" height="30" color="#111827"></a-plane>
+
+      <a-entity id="rig" position="0 1.6 1.4">
+        <a-camera wasd-controls="acceleration: 20" look-controls>
+          <a-cursor
+            id="gazeCursor"
+            raycaster="objects: .interactive"
+            geometry="primitive: ring; radiusInner: 0.007; radiusOuter: 0.011"
+            material="color: #93c5fd; shader: flat"
+            position="0 0 -1"
+          ></a-cursor>
+        </a-camera>
+
+        <a-entity
+          laser-controls="hand: left"
+          raycaster="objects: .interactive"
+          line="color: #60a5fa; opacity: 0.8"
+        ></a-entity>
+        <a-entity
+          laser-controls="hand: right"
+          raycaster="objects: .interactive"
+          line="color: #34d399; opacity: 0.8"
+        ></a-entity>
+      </a-entity>
+
+      <a-entity position="0 1.75 -2.1">
+        <a-plane width="2.1" height="1.42" color="#0f172a" material="shader: flat"></a-plane>
+        <a-plane id="terminalPanel"
+          class="interactive"
+          width="1.92"
+          height="1.08"
+          position="0 0.08 0.01"
+          vr-terminal="status: #terminalStatus; cols: 120; rows: 34; wsPath: /pty"
+        ></a-plane>
+        <a-text id="terminalStatus"
+          value="Booting terminal..."
+          width="2.8"
+          align="left"
+          color="#93c5fd"
+          position="-0.95 0.63 0.02"
+        ></a-text>
+      </a-entity>
+
+      <a-entity id="softkeys" position="0 0.72 -2.0">
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: Tab; seq: \t" position="-0.84 0 0"></a-entity>
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: Esc; seq: \u001b" position="-0.60 0 0"></a-entity>
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: Ctrl+C; seq: \u0003" position="-0.30 0 0"></a-entity>
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: Ctrl+L; seq: \u000c" position="0.02 0 0"></a-entity>
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: ←; seq: \u001b[D" position="0.30 0 0"></a-entity>
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: ↑; seq: \u001b[A" position="0.48 0 0"></a-entity>
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: ↓; seq: \u001b[B" position="0.66 0 0"></a-entity>
+        <a-entity class="interactive terminal-key" terminal-softkey="target: #terminalPanel; label: →; seq: \u001b[C" position="0.84 0 0"></a-entity>
+      </a-entity>
+
+      <a-text
+        value="Move: WASD\nLook: mouse / headset\nFocus: click terminal"
+        width="2.5"
+        align="center"
+        color="#cbd5e1"
+        position="0 0.28 -1.4"
+      ></a-text>
+    </a-scene>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

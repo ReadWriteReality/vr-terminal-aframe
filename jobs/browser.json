@@ -1,0 +1,16 @@
+{
+  "name": "browser",
+  "description": "Load a URL on WEB-01 with browser-style rendering",
+  "version": "1.0.0",
+  "args": {
+    "url": { "required": true, "description": "URL to display" },
+    "render": { "default": "browser", "description": "text or browser" }
+  },
+  "commands": [
+    {
+      "type": "eval",
+      "tag": "job-browser",
+      "code": "var el=document.querySelector('[html-display]');el.setAttribute('html-display',{canvas:'#hud-canvas-url',mode:'proxy',render:'{{render}}',url:'{{url}}',proxyBase:'/proxy?url='});el.components['html-display'].loadContent();console.log('[job:browser] loading {{url}}');"
+    }
+  ]
+}

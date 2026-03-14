@@ -1,0 +1,13 @@
+{
+  "name": "dashboard",
+  "description": "Station status dashboard on WEB-01",
+  "version": "1.0.0",
+  "args": {},
+  "commands": [
+    {
+      "type": "eval",
+      "tag": "job-dashboard",
+      "code": "var el=document.querySelector('[html-display]');el.setAttribute('html-display',{canvas:'#hud-canvas-url',mode:'raw',render:'browser',html:'<div style=\"padding:20px\"><h1 style=\"color:#00ffcc;font-size:22px;border-bottom:2px solid #00ffaa;padding-bottom:10px\">ORBITAL STATION ALPHA</h1><div style=\"display:flex;gap:20px;margin-top:15px\"><div style=\"flex:1;background:#0d1a2a;padding:15px;border:1px solid #00ffaa40;border-radius:4px\"><h2 style=\"color:#00ddff;font-size:14px;margin:0 0 8px\">REACTOR</h2><div style=\"background:#001a10;height:20px;border-radius:3px;overflow:hidden\"><div style=\"background:linear-gradient(90deg,#00ff88,#00ffcc);width:98%;height:100%;border-radius:3px\"></div></div><p style=\"color:#00ff88;font-size:12px;margin:5px 0 0\">98.2% OUTPUT</p></div><div style=\"flex:1;background:#0d1a2a;padding:15px;border:1px solid #00ffaa40;border-radius:4px\"><h2 style=\"color:#00ddff;font-size:14px;margin:0 0 8px\">O2 SUPPLY</h2><div style=\"background:#001a10;height:20px;border-radius:3px;overflow:hidden\"><div style=\"background:linear-gradient(90deg,#44aaff,#00ddff);width:100%;height:100%;border-radius:3px\"></div></div><p style=\"color:#44aaff;font-size:12px;margin:5px 0 0\">100% NOMINAL</p></div></div><div style=\"margin-top:15px;background:#0d1a2a;padding:15px;border:1px solid #ff444440;border-radius:4px\"><h2 style=\"color:#ff4444;font-size:14px;margin:0 0 8px\">ALERTS</h2><p style=\"color:#ff8844;font-size:12px;margin:4px 0\">Micrometeorite activity — Sector 7</p><p style=\"color:#ffaa00;font-size:12px;margin:4px 0\">Solar flare warning — ETA 4h 22m</p><p style=\"color:#00ff88;font-size:12px;margin:4px 0\">Hull integrity: NOMINAL</p></div><div style=\"margin-top:15px;text-align:center;color:#00ffaa80;font-size:11px\">ORBITAL SECURITY STATION v1.0</div></div>'});el.components['html-display'].loadContent();console.log('[job:dashboard] loaded');"
+    }
+  ]
+}
